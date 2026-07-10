@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JSM 2026 GP Course Implementation Plan</title>
+  <style>
+    :root { --bg:#0d1117; --surface:#161b22; --surface2:#21262d; --border:#30363d; --text:#c9d1d9; --muted:#8b949e; --accent:#58a6ff; --success:#3fb950; --warning:#d29922; --danger:#f85149; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.55; }
+    .container { max-width:1120px; margin:auto; padding:2rem 1.5rem 4rem; }
+    header { border-bottom:1px solid var(--border); padding-bottom:1.4rem; }
+    h1 { margin:0; font-size:2.15rem; letter-spacing:-.02em; }
+    h2 { margin:2.5rem 0 1rem; padding-bottom:.4rem; border-bottom:1px solid var(--border); font-size:1.35rem; }
+    h3 { margin:1.25rem 0 .4rem; font-size:1.05rem; }
+    .meta,.muted { color:var(--muted); }
+    .summary,.phase,.card { border:1px solid var(--border); border-radius:9px; background:var(--surface); padding:1.1rem 1.2rem; }
+    .summary p:first-child { margin-top:0; }
+    .summary p:last-child { margin-bottom:0; }
+    .phase { margin:.8rem 0; }
+    .phase-head { display:flex; justify-content:space-between; gap:1rem; align-items:baseline; flex-wrap:wrap; }
+    .phase-title { font-weight:700; }
+    .phase-duration { color:var(--muted); font-size:.9rem; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:1rem; }
+    .card h3 { margin-top:0; }
+    .diagram,pre { overflow:auto; background:#010409; border:1px solid var(--border); border-radius:8px; padding:1rem; font: .83rem/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; white-space:pre; }
+    .code { border:1px solid var(--border); border-radius:8px; overflow:hidden; margin:1rem 0; }
+    .code-head { display:flex; justify-content:space-between; gap:1rem; padding:.45rem .75rem; background:var(--surface2); color:var(--muted); font-size:.8rem; }
+    .code pre { margin:0; border:0; border-radius:0; }
+    table { width:100%; border-collapse:collapse; font-size:.9rem; }
+    th,td { padding:.65rem .75rem; text-align:left; vertical-align:top; border-bottom:1px solid var(--border); }
+    th { color:var(--muted); font-size:.78rem; letter-spacing:.04em; text-transform:uppercase; }
+    .badge { display:inline-block; padding:.12rem .45rem; border-radius:12px; font-size:.72rem; font-weight:700; text-transform:uppercase; }
+    .high { color:var(--danger); border:1px solid #f8514966; background:#f8514922; }
+    .medium { color:var(--warning); border:1px solid #d2992266; background:#d2992222; }
+    .low { color:var(--success); border:1px solid #3fb95066; background:#3fb95022; }
+    .criteria { list-style:none; padding:0; }
+    .criteria li { margin:.55rem 0; padding:.8rem 1rem; border:1px solid var(--border); border-radius:8px; background:var(--surface); }
+    .criteria li::before { content:"✓"; color:var(--success); font-weight:700; padding-right:.6rem; }
+    code { color:#a5d6ff; }
+    @media (max-width:650px) { .container { padding:1rem 1rem 3rem; } h1 { font-size:1.65rem; } }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>JSM 2026: Gaussian Processes with PyMC</h1>
+      <div class="meta">Implementation plan · 2026-07-09 · Four-hour continuing-education course · Version-pinned local delivery</div>
+    </header>
+
+    <section>
+      <h2>Executive Summary</h2>
+      <div class="summary">
+        <p>The course ships four hour-aligned marimo notebooks plus a pre-course environment check. Every fitted model uses vendored observed data: salmon recruitment, coal-disaster counts, GB electricity demand, Walker Lake concentration, and grouped pitcher spin rates.</p>
+        <p>A single Pixi lock supports Windows, Linux, Intel macOS, and Apple Silicon macOS. Core PyMC work is CPython-only; browser-only WASM is deliberately excluded because PyMC/PyTensor fitting is not a supported Pyodide path.</p>
+        <p>Notebook flow is observe → predict → code exercise → inspect. Posterior sampling is explicit and click-gated; release requires visible PPCs, zero divergences, rank-R-hat below 1.01, and bulk/tail ESS above 400 for reported scalar parameters.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Delivery Architecture</h2>
+      <div class="diagram">pixi.toml + pixi.lock
+        │  win-64 · linux-64 · osx-64 · osx-arm64
+        ▼
+00_environment_check.py ── validates versions + local assets + minimal logp
+        │
+        ├── 01_foundations.py ─────────── salmon Normal / Marginal GP
+        ├── 02_exact_and_latent_gps.py ─ salmon Marginal + coal Latent Poisson
+        ├── 03_kernels_inputs_and_hierarchy.py
+        │      └── electricity active_dims · Walker 2-D · grouped spin priors
+        └── 04_workflow_and_hsgp.py ─── exact comparator + full HSGP
+
+vendored data/ ──&gt; deterministic loaders ──&gt; model builders ──&gt; marimo UI
+       │                     │                       │
+       └──────────── tests/test_data_contracts.py · model contracts · smoke tests</div>
+
+      <div class="grid">
+        <article class="card"><h3>Environment</h3><p>Python 3.13, PyMC 6.1.0, ArviZ 1.2.0, marimo 0.23.13. One lockfile solves all four supported platforms.</p></article>
+        <article class="card"><h3>Data boundary</h3><p>All data are local release artifacts. A provenance and redistribution record is required for every file; notebooks have no HTTP path.</p></article>
+        <article class="card"><h3>Notebook boundary</h3><p>Each numbered marimo file is independently teachable. Testable builders live in single-function <code>@app.function</code> cells using one setup cell.</p></article>
+        <article class="card"><h3>Compute boundary</h3><p>Widgets drive only low-cost prior/covariance displays. MCMC is gated by <code>run_button</code>; Hour 3 never runs posterior MCMC.</p></article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Implementation Phases</h2>
+      <article class="phase"><div class="phase-head"><span class="phase-title">1. Multi-platform workspace</span><span class="phase-duration">Task 1</span></div><p>Create the Pixi manifest, lock all target platforms, and establish test/lint/marimo-check tasks.</p><div class="muted">Dependency: none · Deliverables: <code>pixi.toml</code>, <code>pixi.lock</code>, <code>.gitignore</code></div></article>
+      <article class="phase"><div class="phase-head"><span class="phase-title">2. Data release contracts</span><span class="phase-duration">Task 2</span></div><p>Document sources and redistribution terms; normalize assets; lock exact subsets, ranges, schemas, and no-network tests.</p><div class="muted">Dependency: workspace · Release gate: every asset has real provenance and licence evidence.</div></article>
+      <article class="phase"><div class="phase-head"><span class="phase-title">3. Environment check and test loader</span><span class="phase-duration">Task 3</span></div><p>Expose a behavioural preflight that validates package versions, local assets, and PyMC compilation without sampling.</p><div class="muted">Dependency: data contracts · Deliverables: environment notebook plus import utility for numbered marimo modules.</div></article>
+      <article class="phase"><div class="phase-head"><span class="phase-title">4. Foundations and core exact/latent GPs</span><span class="phase-duration">Tasks 4–5</span></div><p>Build the salmon primer/Marginal GP and coal Poisson Latent GP with prior checks, gated posterior inference, predictions, diagnostics, and exercises.</p><div class="muted">Dependency: validated salmon and coal assets.</div></article>
+      <article class="phase"><div class="phase-head"><span class="phase-title">5. Kernel structure and hierarchy</span><span class="phase-duration">Task 6</span></div><p>Teach additive <code>active_dims</code>, anisotropic two-dimensional inputs, and a shared-plus-deviation latent hierarchy with real likelihoods and prior-only execution.</p><div class="muted">Dependency: deterministic electricity, Walker Lake, and spin-rate subsets.</div></article>
+      <article class="phase"><div class="phase-head"><span class="phase-title">6. HSGP workflow and release rehearsal</span><span class="phase-duration">Tasks 7–8</span></div><p>Contrast exact GP with HSGP <code>m=[50], c=1.5</code>, then rehearse every gated fit against runtime, diagnostics, and cross-platform acceptance gates.</p><div class="muted">Dependency: all prior phases and the final lockfile.</div></article>
+    </section>
+
+    <section>
+      <h2>Canonical Model Contracts</h2>
+      <div class="code"><div class="code-head"><span>Python</span><span>Exact salmon Marginal GP</span></div><pre><code>cov = eta**2 * pm.gp.cov.Matern52(1, ls=ell)
+gp = pm.gp.Marginal(mean_func=pm.gp.mean.Constant(c=alpha), cov_func=cov)
+gp.marginal_likelihood("recruits", X=x_data, y=y, sigma=sigma)</code></pre></div>
+      <div class="code"><div class="code-head"><span>Python</span><span>Electricity kernel composition</span></div><pre><code>cov_long = eta_long**2 * pm.gp.cov.Matern52(
+    input_dim=2, ls=ell_long, active_dims=[0]
+)
+cov_year = eta_year**2 * pm.gp.cov.Periodic(
+    input_dim=2, ls=ell_year, period=1.0, active_dims=[1]
+)
+gp = pm.gp.Marginal(cov_func=cov_long + cov_year)</code></pre></div>
+      <div class="code"><div class="code-head"><span>Python</span><span>Full-series HSGP baseline</span></div><pre><code>cov = eta**2 * pm.gp.cov.Matern52(1, ls=ell)
+gp = pm.gp.HSGP(m=[50], c=1.5, cov_func=cov)
+f = gp.prior("f", X=x_data, dims="obs", shape=len(y_full))
+pm.Normal("demand", mu=f, sigma=sigma, observed=y_full, dims="obs")</code></pre></div>
+    </section>
+
+    <section>
+      <h2>Dependencies &amp; Risks</h2>
+      <table>
+        <thead><tr><th>Item</th><th>Type</th><th>Severity</th><th>Mitigation</th></tr></thead>
+        <tbody>
+          <tr><td>Data redistribution rights</td><td>Release dependency</td><td><span class="badge high">High</span></td><td>Do not copy an asset until its authoritative source and redistribution basis are recorded. Replace any unverifiable candidate while retaining the stated observed-data model contract.</td></tr>
+          <tr><td>Cross-platform binary resolution</td><td>Packaging risk</td><td><span class="badge high">High</span></td><td>Solve all four Pixi platforms into one lock and install/rehearse the same lock on each before release.</td></tr>
+          <tr><td>HSGP runtime / convergence</td><td>Compute risk</td><td><span class="badge medium">Medium</span></td><td>Gate sampling; require the 180-second maximum, zero divergences, R-hat &lt; 1.01, and ESS &gt; 400 before release.</td></tr>
+          <tr><td>Browser-only fallback</td><td>Platform limitation</td><td><span class="badge medium">Medium</span></td><td>Exclude core notebooks from WASM. A future remote fallback must be a pinned CPython server environment, separately smoke-tested.</td></tr>
+          <tr><td>Legacy source notebooks</td><td>Migration risk</td><td><span class="badge low">Low</span></td><td>Reuse narrative and interaction ideas only. Rebuild all models with current PyMC/DataTree APIs.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Definition of Done</h2>
+      <ul class="criteria">
+        <li>One Pixi lock installs and passes the environment check on Windows, Linux, Intel macOS, and Apple Silicon macOS.</li>
+        <li>Every distributed dataset has verified source, redistribution basis, schema, transformation, and deterministic subset tests.</li>
+        <li>All four marimo notebooks pass strict validation, expose their exercises, and execute non-sampling paths offline after bootstrap.</li>
+        <li>Each canonical posterior model exposes prior predictive, posterior predictive, divergence, rank-R-hat, and ESS outputs through DataTree access.</li>
+        <li>Release rehearsals meet every runtime, convergence, PPC, and HSGP-boundary gate on the stated laptop baseline.</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
