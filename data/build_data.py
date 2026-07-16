@@ -1,0 +1,278 @@
+"""Rebuild every vendored dataset from its authoritative source.
+
+Run once by the maintainer:  pixi run python data/build_data.py
+Learner notebooks never call this; they read the frozen CSVs.
+"""
+
+from __future__ import annotations
+
+import io
+from pathlib import Path
+
+import polars as pl
+import requests
+
+DATA = Path(__file__).resolve().parent
+TIMEOUT = 60
+
+
+def build_theophylline() -> None:
+    # R's Theoph dataset, mirrored as CSV by the vincentarelbundock Rdatasets project.
+    url = "https://vincentarelbundock.github.io/Rdatasets/csv/datasets/Theoph.csv"
+    raw = requests.get(url, timeout=TIMEOUT).text
+    df = pl.read_csv(io.StringIO(raw))
+    # Columns: rownames, Subject, Wt, Dose, Time, conc
+    out = df.select(
+        pl.col("Subject").cast(pl.Int64).alias("subject"),
+        pl.col("Time").cast(pl.Float64).alias("time"),
+        pl.col("conc").cast(pl.Float64),
+        pl.col("Dose").cast(pl.Float64).alias("dose"),
+        pl.col("Wt").cast(pl.Float64).alias("weight"),
+    ).sort(["subject", "time"])
+    assert out.height == 132, out.height
+    out.write_csv(DATA / "theophylline.csv")
+
+
+# Classic Jarrett (1979) British coal-mining disaster counts, 1851-1962.
+_COAL = [
+    4,
+    5,
+    4,
+    1,
+    0,
+    4,
+    3,
+    4,
+    0,
+    6,
+    3,
+    3,
+    4,
+    0,
+    2,
+    6,
+    3,
+    3,
+    5,
+    4,
+    5,
+    3,
+    1,
+    4,
+    4,
+    1,
+    5,
+    5,
+    3,
+    4,
+    2,
+    5,
+    2,
+    2,
+    3,
+    4,
+    2,
+    1,
+    3,
+    2,
+    2,
+    1,
+    1,
+    1,
+    1,
+    3,
+    0,
+    0,
+    1,
+    0,
+    1,
+    1,
+    0,
+    0,
+    3,
+    1,
+    0,
+    3,
+    2,
+    2,
+    0,
+    1,
+    1,
+    1,
+    0,
+    1,
+    0,
+    1,
+    0,
+    0,
+    0,
+    2,
+    1,
+    0,
+    0,
+    0,
+    1,
+    1,
+    0,
+    2,
+    3,
+    3,
+    1,
+    1,
+    2,
+    1,
+    1,
+    1,
+    1,
+    2,
+    4,
+    2,
+    0,
+    0,
+    1,
+    4,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    1,
+    0,
+    1,
+    0,
+]
+
+
+def build_coal_disasters() -> None:
+    years = list(range(1851, 1851 + len(_COAL)))
+    df = pl.DataFrame({"year": years, "disasters": _COAL})
+    assert df.height == 112, df.height
+    df.write_csv(DATA / "coal_disasters.csv")
+
+
+def build_noaa_tides(station: str = "9414290", year: int = 2019) -> None:
+    # NOAA CO-OPS datagetter: one calendar year of hourly water-level
+    # observations, MLLW datum, GMT, metric units.
+    url = (
+        "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
+        f"?begin_date={year}0101&end_date={year}1231"
+        f"&station={station}&product=hourly_height&datum=MLLW"
+        "&time_zone=gmt&units=metric&format=json&application=jsm2026_gp"
+    )
+    response = requests.get(url, timeout=TIMEOUT)
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload["data"]
+    df = (
+        pl.DataFrame(
+            {
+                "time": [r["t"] for r in rows],
+                "water_level": [r["v"] for r in rows],
+            }
+        )
+        .with_columns(pl.col("water_level").cast(pl.Float64, strict=False))
+        .drop_nulls("water_level")
+        .sort("time")
+    )
+    assert df.height >= 8000, df.height
+    df.write_csv(DATA / "noaa_tides_hourly.csv")
+
+
+def build_places_diabetes(state: str = "North Carolina") -> None:
+    # PLACES: Local Data for Better Health, County Data, 2025 release
+    # (Socrata dataset id "swc5-untb"). Verified against a live sample
+    # record on 2026-07-15: the current release has no top-level
+    # `latitude`/`longitude` fields -- the county centroid is nested in a
+    # `geolocation` GeoJSON Point (`coordinates: [lon, lat]`) -- so this
+    # selects `geolocation` instead and unpacks it after fetch.
+    base = "https://data.cdc.gov/resource/swc5-untb.json"
+    params = (
+        f"?$where=statedesc='{state}'"
+        "&$select=locationname,geolocation,measureid,data_value,data_value_type"
+        "&$limit=50000"
+    )
+    response = requests.get(base + params.replace(" ", "%20"), timeout=TIMEOUT)
+    response.raise_for_status()
+    rows = response.json()
+    raw = pl.DataFrame(rows)
+    crude = raw.filter(pl.col("data_value_type") == "Crude prevalence")
+    wide = (
+        crude.filter(pl.col("measureid").is_in(["DIABETES", "OBESITY"]))
+        .with_columns(
+            pl.col("data_value").cast(pl.Float64, strict=False),
+            pl.col("geolocation").struct.field("coordinates").alias("_coords"),
+        )
+        .with_columns(
+            pl.col("_coords").list.get(0).cast(pl.Float64).alias("lon"),
+            pl.col("_coords").list.get(1).cast(pl.Float64).alias("lat"),
+        )
+        .pivot(
+            values="data_value",
+            index=["locationname", "lon", "lat"],
+            on="measureid",
+            aggregate_function="first",
+        )
+        .rename(
+            {
+                "locationname": "county",
+                "DIABETES": "diabetes_pct",
+                "OBESITY": "obesity_pct",
+            }
+        )
+        .select("county", "lon", "lat", "diabetes_pct", "obesity_pct")
+        .drop_nulls()
+        .sort("county")
+    )
+    assert 90 <= wide.height <= 260, wide.height
+    wide.write_csv(DATA / "places_diabetes.csv")
+
+
+def build_spin_rates() -> None:
+    # Curated from the instats_gp fastball-spin-rate source file (MLB
+    # Statcast 2021 fastball average spin rate per pitcher per game).
+    src = Path("/var/home/fonnesbeck/repos/instats_gp/data/fastball_spin_rates.csv")
+    df = (
+        pl.read_csv(src)
+        .rename({"pitcher_name": "pitcher", "avg_spin_rate": "spin_rate"})
+        .drop_nulls(["pitcher", "game_date", "spin_rate"])
+        .filter(pl.col("n_pitches") >= 10)
+        .unique(["pitcher", "game_date"])
+    )
+    # rank pitchers by count desc then name asc; keep 3 with >=10 games
+    counts = (
+        df.group_by("pitcher").len().sort(["len", "pitcher"], descending=[True, False])
+    )
+    keep = [
+        p
+        for p in counts["pitcher"].to_list()
+        if df.filter(pl.col("pitcher") == p).height >= 10
+    ][:3]
+    keep = sorted(keep)
+    out = (
+        df.filter(pl.col("pitcher").is_in(keep))
+        .sort(["pitcher", "game_date"])
+        .group_by("pitcher", maintain_order=True)
+        .head(10)
+        .select("pitcher", "game_date", "spin_rate", "n_pitches")
+    )
+    assert out.height == 30, out.height
+    out.write_csv(DATA / "fastball_spin_rates.csv")
+
+
+def main() -> None:
+    build_theophylline()
+    build_coal_disasters()
+    build_noaa_tides()  # Task 3
+    build_places_diabetes()  # Task 4
+    build_spin_rates()  # Task 5
+
+
+if __name__ == "__main__":
+    main()

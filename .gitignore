@@ -1,1 +1,8 @@
 .worktrees/
+.pixi/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+__marimo__/
+*.pyc
+results/
