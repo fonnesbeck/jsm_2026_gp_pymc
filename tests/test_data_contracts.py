@@ -43,3 +43,14 @@ def test_places_diabetes_contract():
     assert df["diabetes_pct"].max() < 40
     assert df["lat"].min() > 20 and df["lat"].max() < 55
     assert df.null_count().sum_horizontal().item() == 0
+
+
+def test_spin_rates_contract():
+    df = pl.read_csv(DATA / "fastball_spin_rates.csv")
+    assert df.columns == ["pitcher", "game_date", "spin_rate", "n_pitches"]
+    assert df.height == 30
+    assert df["pitcher"].n_unique() == 3
+    counts = df.group_by("pitcher").len()["len"].to_list()
+    assert all(c == 10 for c in counts)
+    assert df["n_pitches"].min() >= 10
+    assert df.null_count().sum_horizontal().item() == 0
