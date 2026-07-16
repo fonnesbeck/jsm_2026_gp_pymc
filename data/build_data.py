@@ -234,12 +234,44 @@ def build_places_diabetes(state: str = "North Carolina") -> None:
     wide.write_csv(DATA / "places_diabetes.csv")
 
 
+def build_spin_rates() -> None:
+    # Curated from the instats_gp fastball-spin-rate source file (MLB
+    # Statcast 2021 fastball average spin rate per pitcher per game).
+    src = Path("/var/home/fonnesbeck/repos/instats_gp/data/fastball_spin_rates.csv")
+    df = (
+        pl.read_csv(src)
+        .rename({"pitcher_name": "pitcher", "avg_spin_rate": "spin_rate"})
+        .drop_nulls(["pitcher", "game_date", "spin_rate"])
+        .filter(pl.col("n_pitches") >= 10)
+        .unique(["pitcher", "game_date"])
+    )
+    # rank pitchers by count desc then name asc; keep 3 with >=10 games
+    counts = (
+        df.group_by("pitcher").len().sort(["len", "pitcher"], descending=[True, False])
+    )
+    keep = [
+        p
+        for p in counts["pitcher"].to_list()
+        if df.filter(pl.col("pitcher") == p).height >= 10
+    ][:3]
+    keep = sorted(keep)
+    out = (
+        df.filter(pl.col("pitcher").is_in(keep))
+        .sort(["pitcher", "game_date"])
+        .group_by("pitcher", maintain_order=True)
+        .head(10)
+        .select("pitcher", "game_date", "spin_rate", "n_pitches")
+    )
+    assert out.height == 30, out.height
+    out.write_csv(DATA / "fastball_spin_rates.csv")
+
+
 def main() -> None:
     build_theophylline()
     build_coal_disasters()
     build_noaa_tides()  # Task 3
     build_places_diabetes()  # Task 4
-    # build_spin_rates()       # Task 5
+    build_spin_rates()  # Task 5
 
 
 if __name__ == "__main__":

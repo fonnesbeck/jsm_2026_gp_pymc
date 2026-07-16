@@ -116,4 +116,35 @@ present on `pymc.gp` in this version.
   associated modeling uncertainty (see the `low_confidence_limit`/
   `high_confidence_limit` fields in the source data, not vendored here).
 
+## Fastball spin rates (`fastball_spin_rates.csv`)
+
+- **Source:** derived from the `instats_gp` project's vendored fastball
+  spin-rate file
+  (`/var/home/fonnesbeck/repos/instats_gp/data/fastball_spin_rates.csv`),
+  itself sourced from MLB Statcast — 2021-season fastball average spin
+  rate per pitcher per game. No network fetch: the source file already
+  exists on disk and is read directly.
+- **Access date:** 2026-07-15
+- **License:** MLB Statcast data as redistributed for teaching/analysis
+  use in the `instats_gp` project; no additional restrictions applied
+  here.
+- **Curation:** the source file covers many pitcher-games. It is
+  deterministically curated down to a small teaching-sized panel:
+  rows with a null `pitcher`/`game_date`/`spin_rate` are dropped; rows
+  with `n_pitches < 10` are dropped; duplicate `(pitcher, game_date)`
+  rows are collapsed to one; pitchers are ranked by number of
+  remaining games (descending), ties broken alphabetically, and the
+  top 3 pitchers with at least 10 qualifying games are kept (sorted
+  alphabetically by name); for each of those 3 pitchers, the first 10
+  games in date order are kept. Columns renamed from the source
+  (`pitcher_name` -> `pitcher`, `avg_spin_rate` -> `spin_rate`); rows
+  sorted by `(pitcher, game_date)`.
+- **Selected pitchers (deterministic given the source file):**
+  Buehler, Walker; Hearn, Taylor; Rodriguez, Richard.
+- **Units:** `game_date` is an ISO-8601 date string; `spin_rate` is the
+  average fastball spin rate for that pitcher-game in revolutions per
+  minute (rpm); `n_pitches` is the number of fastballs thrown by that
+  pitcher in that game (all rows have `n_pitches >= 10`). 3 pitchers x
+  10 games = 30 rows, no nulls.
+
 <!-- per-dataset sections added by later tasks -->
