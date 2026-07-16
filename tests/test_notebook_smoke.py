@@ -33,3 +33,7 @@ def test_02_marginal_latent():
 
 def test_03_kernels_hierarchy():
     run_notebook(NB / "03_kernels_and_hierarchy.py", timeout_s=240)
+
+
+def test_04_scaling_workflow():
+    run_notebook(NB / "04_scaling_and_workflow.py", timeout_s=240)
