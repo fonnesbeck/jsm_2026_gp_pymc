@@ -1,0 +1,27 @@
+[workspace]
+authors = ["Chris Fonnesbeck <fonnesbeck@gmail.com>"]
+channels = ["conda-forge"]
+name = "jsm_2026_gp_pymc"
+platforms = ["win-64", "linux-64", "osx-64", "osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+check = "python -m pytest tests/ -v"
+
+[dependencies]
+python = "3.13.*"
+pymc = ">=6,<7"
+arviz = ">=1,<2"
+nutpie = "*"
+pytensor = "*"
+numba = "*"
+polars = ">=1,<2"
+plotly = ">=6,<7"
+marimo = ">=0.17,<1"
+ipywidgets = "*"
+watchdog = "*"
+scikit-learn = "*"
+pytest = "*"
+requests = "*"
+pip = "*"
+h5netcdf = ">=1.8.1,<2"
