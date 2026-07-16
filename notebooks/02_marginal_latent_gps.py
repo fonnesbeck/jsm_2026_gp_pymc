@@ -477,6 +477,7 @@ def _(RANDOM_SEED, f_pred, f_pred_noise, gp_model, idata, pm):
 @app.cell
 def _(
     PYMC_BLUE,
+    az,
     conc_mean,
     conc_std,
     conc_vals,
@@ -498,10 +499,10 @@ def _(
     )
 
     f_pred_mean = f_pred_vals.mean(axis=0)
-    f_pred_lo, f_pred_hi = np.quantile(f_pred_vals, [0.055, 0.945], axis=0)
-    f_pred_noise_lo, f_pred_noise_hi = np.quantile(
-        f_pred_noise_vals, [0.055, 0.945], axis=0
-    )
+    f_pred_hdi = az.hdi(f_pred_vals, prob=0.89, axis=0)
+    f_pred_lo, f_pred_hi = f_pred_hdi[:, 0], f_pred_hdi[:, 1]
+    f_pred_noise_hdi = az.hdi(f_pred_noise_vals, prob=0.89, axis=0)
+    f_pred_noise_lo, f_pred_noise_hi = f_pred_noise_hdi[:, 0], f_pred_noise_hdi[:, 1]
 
     pred_fig = go.Figure()
     pred_fig.add_trace(
@@ -511,7 +512,7 @@ def _(
             fill="toself",
             fillcolor="rgba(74,158,222,0.15)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% interval (with noise)",
+            name="89% HDI (with noise)",
         )
     )
     pred_fig.add_trace(
@@ -521,7 +522,7 @@ def _(
             fill="toself",
             fillcolor="rgba(21,74,114,0.35)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% interval (f only)",
+            name="89% HDI (f only)",
         )
     )
     pred_fig.add_trace(
@@ -946,10 +947,11 @@ def _(
 
 
 @app.cell
-def _(PYMC_BLUE, coal_idata, disaster_counts, go, np, year_vals):
+def _(PYMC_BLUE, az, coal_idata, disaster_counts, go, np, year_vals):
     rate_samples = coal_idata["posterior"]["rate"].values.reshape(-1, len(year_vals))
     rate_mean = rate_samples.mean(axis=0)
-    rate_lo, rate_hi = np.quantile(rate_samples, [0.055, 0.945], axis=0)
+    rate_hdi = az.hdi(rate_samples, prob=0.89, axis=0)
+    rate_lo, rate_hi = rate_hdi[:, 0], rate_hdi[:, 1]
 
     rate_fig = go.Figure()
     rate_fig.add_trace(
@@ -959,7 +961,7 @@ def _(PYMC_BLUE, coal_idata, disaster_counts, go, np, year_vals):
             fill="toself",
             fillcolor="rgba(21,74,114,0.25)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% interval",
+            name="89% HDI",
         )
     )
     rate_fig.add_trace(
@@ -1095,7 +1097,6 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(
-    PYMC_DARK_GREEN,
     PYMC_GREEN,
     RANDOM_SEED,
     disaster_counts,
@@ -1149,7 +1150,6 @@ def _(
         template="plotly_white",
         showlegend=False,
     )
-    alt_fig.update_traces(line_color=PYMC_DARK_GREEN, selector=dict(name="draw 1"))
 
     mo.accordion(
         {
