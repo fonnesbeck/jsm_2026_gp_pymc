@@ -73,4 +73,47 @@ present on `pymc.gp` in this version.
   count between 8,000 and 9,000 to tolerate this, though this particular
   fetch returned the complete 8,760-row series.
 
+## CDC PLACES county diabetes & obesity (`places_diabetes.csv`)
+
+- **Source:** CDC PLACES: Local Data for Better Health, County Data, 2025
+  release — served via the Socrata Open Data API on data.cdc.gov, dataset
+  id `swc5-untb` (`https://data.cdc.gov/resource/swc5-untb.json`,
+  metadata at `https://data.cdc.gov/api/views/swc5-untb.json`). Underlying
+  survey/model year for the pulled records is 2023.
+- **Access date:** 2026-07-15
+- **State used:** North Carolina (100 counties; 200 raw records — one
+  DIABETES row and one OBESITY row per county).
+- **Measures:** `DIABETES` ("Diagnosed diabetes among adults") and
+  `OBESITY` ("Obesity among adults"), both restricted to
+  `data_value_type == "Crude prevalence"` (percent, unadjusted for age).
+- **License:** CDC PLACES data are public domain U.S. government data,
+  freely available for reuse; see
+  https://www.cdc.gov/places/about/index.html.
+- **Field-name adaptation:** the brief assumed top-level `latitude`/
+  `longitude` fields, but the live 2025-release schema has no such
+  fields — the county centroid is instead nested in a `geolocation`
+  GeoJSON `Point` field (`geolocation.coordinates` = `[lon, lat]`). The
+  builder selects `geolocation` instead of `latitude`/`longitude` and
+  unpacks `coordinates[0]` -> `lon`, `coordinates[1]` -> `lat` after
+  fetch. The measure ids (`DIABETES`, `OBESITY`), `data_value_type`
+  filter (`"Crude prevalence"`), and the rest of the selection contract
+  from the brief were unchanged and confirmed against a live sample
+  record before building.
+- **Transformations:** raw long-format rows (one row per
+  county x measure) filtered to `statedesc == state` and
+  `data_value_type == "Crude prevalence"`, `data_value` cast to
+  Float64, `geolocation.coordinates` unpacked into `lon`/`lat` Float64
+  columns, then pivoted to one row per county with `DIABETES` ->
+  `diabetes_pct` and `OBESITY` -> `obesity_pct`; rows with nulls
+  dropped; sorted by `county`.
+- **Units:** `diabetes_pct`/`obesity_pct` are crude (unadjusted)
+  prevalence percentages among adults; `lon`/`lat` are the county
+  centroid in decimal degrees (WGS84).
+- **Caveat:** PLACES values are **model-based small-area estimates**
+  produced by CDC from BRFSS survey data plus census/population
+  covariates via multilevel regression and poststratification — they
+  are not raw county-level observations or a county census, and carry
+  associated modeling uncertainty (see the `low_confidence_limit`/
+  `high_confidence_limit` fields in the source data, not vendored here).
+
 <!-- per-dataset sections added by later tasks -->
