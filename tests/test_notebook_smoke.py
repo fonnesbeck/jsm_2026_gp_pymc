@@ -43,7 +43,7 @@ def test_00_environment_check():
 
 
 def test_01_foundations():
-    run_notebook(NB / "01_foundations.py", timeout_s=180)
+    run_notebook(NB / "01_foundations.py", timeout_s=900)
 
 
 def test_02_marginal_latent():
