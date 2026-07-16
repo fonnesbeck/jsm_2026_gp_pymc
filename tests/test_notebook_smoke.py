@@ -21,3 +21,7 @@ def run_notebook(path: Path, timeout_s: int) -> float:
 
 def test_00_environment_check():
     run_notebook(NB / "00_environment_check.py", timeout_s=120)
+
+
+def test_01_foundations():
+    run_notebook(NB / "01_foundations.py", timeout_s=180)
