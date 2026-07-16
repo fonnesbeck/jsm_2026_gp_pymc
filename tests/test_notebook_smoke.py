@@ -1,15 +1,34 @@
+import os
 import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 NB = Path(__file__).resolve().parents[1] / "notebooks"
+
+_BROKEN_NOTEBOOK_SOURCE = """\
+import marimo
+
+__generated_with = "0.23.14"
+app = marimo.App()
+
+
+@app.cell
+def _():
+    raise RuntimeError("intentional failure for smoke-test regression check")
+
+
+if __name__ == "__main__":
+    app.run()
+"""
 
 
 def run_notebook(path: Path, timeout_s: int) -> float:
     """Execute a marimo notebook headlessly; return elapsed seconds. Raise on error."""
     start = time.time()
     proc = subprocess.run(
-        ["marimo", "export", "html", str(path), "--no-include-code", "-o", "/dev/null"],
+        ["marimo", "export", "html", str(path), "--no-include-code", "-o", os.devnull],
         capture_output=True,
         text=True,
         timeout=timeout_s,
@@ -37,3 +56,17 @@ def test_03_kernels_hierarchy():
 
 def test_04_scaling_workflow():
     run_notebook(NB / "04_scaling_and_workflow.py", timeout_s=240)
+
+
+def test_run_notebook_detects_cell_error(tmp_path):
+    """Regression guard: run_notebook must raise when a notebook cell errors.
+
+    marimo is only range-pinned in the environment spec, so its exit-code
+    behavior on a failing cell could drift across versions. This pins that
+    behavior with a throwaway notebook that always raises.
+    """
+    broken = tmp_path / "broken_notebook.py"
+    broken.write_text(_BROKEN_NOTEBOOK_SOURCE)
+
+    with pytest.raises(AssertionError):
+        run_notebook(broken, timeout_s=60)

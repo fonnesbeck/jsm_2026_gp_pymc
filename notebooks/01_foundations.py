@@ -303,6 +303,8 @@ def _(RANDOM_SEED, linreg_model, pm):
 
 @app.cell
 def _(az, idata):
+    n_div = idata["sample_stats"]["diverging"].sum().item()
+    print(f"Divergences: {n_div}")
     az.summary(idata["posterior"])
     return
 
