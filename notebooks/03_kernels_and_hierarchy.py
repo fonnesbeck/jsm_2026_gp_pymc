@@ -280,7 +280,7 @@ def _(tides_slice, z):
     tide_hours = (tides_slice["time"] - tide_t0).dt.total_minutes().to_numpy() / 60.0
     tide_level = tides_slice["water_level"].to_numpy()
 
-    tide_hours_mean, tide_hours_std = tide_hours.mean(), tide_hours.std(ddof=0)
+    tide_hours_std = tide_hours.std(ddof=0)
     tide_level_mean, tide_level_std = tide_level.mean(), tide_level.std(ddof=0)
 
     X_tide = z(tide_hours).reshape(-1, 1)  # GP inputs are 2D: (n, 1)
@@ -907,13 +907,15 @@ def _(mo):
         r"""
         ### Predicting on a spatial grid
 
-        We evaluate the fitted GP's conditional mean on a regular
-        longitude/latitude grid covering the county centroids, using the
-        posterior-mean hyperparameters as a single plug-in point (the same
-        `gp.predict(..., diag=True)` pattern used for the extrapolation
-        exercise in Notebook 2) — cheap because it only needs one Cholesky
-        of the $100\times100$ training covariance, reused for every grid
-        point.
+        We evaluate the fitted GP's **full posterior-predictive**
+        conditional on a regular longitude/latitude grid covering the
+        county centroids — the same `.conditional` +
+        `pm.sample_posterior_predictive` pattern used for `f_tide_pred` in
+        Part B and for `f_pred` in Notebook 2 — rather than a single
+        plug-in point estimate, so the heatmap below reflects the actual
+        posterior mean over hyperparameters. The grid is kept modest
+        (20x20 = 400 points) since `.conditional` draws a full-covariance
+        sample per posterior draw and cost grows quickly with grid size.
         """
     )
     return
@@ -923,7 +925,6 @@ def _(mo):
 def _(
     gp_places,
     np,
-    places_idata,
     places_lat,
     places_lat_mean,
     places_lat_std,
@@ -932,7 +933,7 @@ def _(
     places_lon_std,
     places_model,
 ):
-    grid_n = 60
+    grid_n = 20
     lon_grid = np.linspace(places_lon.min(), places_lon.max(), grid_n)
     lat_grid = np.linspace(places_lat.min(), places_lat.max(), grid_n)
     LON_MESH, LAT_MESH = np.meshgrid(lon_grid, lat_grid)
@@ -944,15 +945,18 @@ def _(
         ]
     )
 
-    places_post_mean_point = {
-        var: places_idata["posterior"][var].mean(dim=["chain", "draw"]).values
-        for var in ["ell", "eta", "sigma_places"]
-    }
     with places_model:
-        grid_mu, grid_var = gp_places.predict(
-            X_grid, point=places_post_mean_point, diag=True
+        f_grid = gp_places.conditional("f_grid", X_grid)
+    return LAT_MESH, LON_MESH, f_grid, grid_n, lat_grid, lon_grid
+
+
+@app.cell
+def _(RANDOM_SEED, f_grid, pm, places_idata, places_model):
+    with places_model:
+        places_grid_ppc = pm.sample_posterior_predictive(
+            places_idata, var_names=["f_grid"], random_seed=RANDOM_SEED
         )
-    return LAT_MESH, LON_MESH, grid_mu, grid_n, lat_grid, lon_grid
+    return (places_grid_ppc,)
 
 
 @app.cell
@@ -961,15 +965,20 @@ def _(
     LAT_MESH,
     LON_MESH,
     go,
-    grid_mu,
     grid_n,
     places,
     places_diabetes,
     places_diabetes_mean,
     places_diabetes_std,
+    places_grid_ppc,
     places_lat,
     places_lon,
 ):
+    grid_mu = (
+        places_grid_ppc["posterior_predictive"]["f_grid"]
+        .mean(dim=["chain", "draw"])
+        .values
+    )
     grid_diabetes = (grid_mu * places_diabetes_std + places_diabetes_mean).reshape(
         grid_n, grid_n
     )
@@ -1245,8 +1254,10 @@ def _(mo):
         `target_accept` well above the 0.8 default (0.99, found by
         checking for divergences) rather than the more typical 0.9, and use
         more draws than the `1000` default to comfortably clear
-        `ess_bulk > 400` on every parameter, including the per-pitcher
-        deviations.
+        `ess_bulk > 400` on the **full posterior** — every hyperparameter,
+        the per-pitcher deviations, and the latent GP itself
+        (`f_pop`/`f_pop_rotated_`, its highest-dimensional and most
+        funnel-prone component) — not just a convenient subset.
         """
     )
     return
@@ -1273,14 +1284,20 @@ def _(az, spin_idata):
     spin_n_draws_total = (
         spin_idata["posterior"].sizes["chain"] * spin_idata["posterior"].sizes["draw"]
     )
+    # Full-posterior summary — no var_names filter, so the whitened GP free RV
+    # (f_pop_rotated_) and the Deterministic f_pop are both covered, along
+    # with every hyperparameter and the per-pitcher deviations.
+    spin_full_summary = az.summary(spin_idata["posterior"])
+    spin_min_ess_bulk = float(spin_full_summary["ess_bulk"].min())
+    spin_min_ess_tail = float(spin_full_summary["ess_tail"].min())
+    spin_max_rhat = float(spin_full_summary["r_hat"].astype(float).max())
+    print(f"Divergences: {spin_n_div} / {spin_n_draws_total}")
+    # Compact table for readability; the numbers above still come from the
+    # full-posterior summary, not this filtered view.
     spin_summary = az.summary(
         spin_idata["posterior"],
         var_names=["ell_pop", "eta_pop", "sigma_dev", "sigma_obs", "dev"],
     )
-    spin_min_ess_bulk = float(spin_summary["ess_bulk"].min())
-    spin_min_ess_tail = float(spin_summary["ess_tail"].min())
-    spin_max_rhat = float(spin_summary["r_hat"].astype(float).max())
-    print(f"Divergences: {spin_n_div} / {spin_n_draws_total}")
     spin_summary
     return (
         spin_max_rhat,
@@ -1304,10 +1321,13 @@ def _(
     mo.md(
         f"""
         **Diagnostics:** {spin_n_div} divergence(s) out of
-        {spin_n_draws_total} draws in {spin_sample_seconds:.1f}s. Minimum
-        `ess_bulk` is {spin_min_ess_bulk:.0f} and minimum `ess_tail` is
-        {spin_min_ess_tail:.0f} — both above the 400 threshold — and
-        maximum `r_hat` is {spin_max_rhat:.3f}. Safe to interpret.
+        {spin_n_draws_total} draws in {spin_sample_seconds:.1f}s. Computed
+        over the **full posterior** — every hyperparameter, the per-pitcher
+        deviations, and the latent GP free RV `f_pop_rotated_` itself, not a
+        filtered subset — minimum `ess_bulk` is {spin_min_ess_bulk:.0f} and
+        minimum `ess_tail` is {spin_min_ess_tail:.0f} — both above the 400
+        threshold — and maximum `r_hat` is {spin_max_rhat:.3f}. Safe to
+        interpret.
         """
     )
     return
