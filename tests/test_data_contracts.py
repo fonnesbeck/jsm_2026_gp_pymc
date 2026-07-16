@@ -22,3 +22,13 @@ def test_coal_disasters_contract():
     assert df["year"].max() == 1962
     assert df["disasters"].min() >= 0
     assert df.null_count().sum_horizontal().item() == 0
+
+
+def test_noaa_tides_contract():
+    df = pl.read_csv(DATA / "noaa_tides_hourly.csv")
+    assert df.columns == ["time", "water_level"]
+    assert df.height >= 8000  # ~1 year of hourly obs, allowing small gaps
+    assert df.height <= 9000
+    assert df["water_level"].is_finite().all()
+    # two-week exact-fit slice used in Hour 3 must be small enough to fit live
+    assert df.head(300).height == 300

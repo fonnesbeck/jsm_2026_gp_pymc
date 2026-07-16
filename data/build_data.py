@@ -157,10 +157,38 @@ def build_coal_disasters() -> None:
     df.write_csv(DATA / "coal_disasters.csv")
 
 
+def build_noaa_tides(station: str = "9414290", year: int = 2019) -> None:
+    # NOAA CO-OPS datagetter: one calendar year of hourly water-level
+    # observations, MLLW datum, GMT, metric units.
+    url = (
+        "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
+        f"?begin_date={year}0101&end_date={year}1231"
+        f"&station={station}&product=hourly_height&datum=MLLW"
+        "&time_zone=gmt&units=metric&format=json&application=jsm2026_gp"
+    )
+    response = requests.get(url, timeout=TIMEOUT)
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload["data"]
+    df = (
+        pl.DataFrame(
+            {
+                "time": [r["t"] for r in rows],
+                "water_level": [r["v"] for r in rows],
+            }
+        )
+        .with_columns(pl.col("water_level").cast(pl.Float64, strict=False))
+        .drop_nulls("water_level")
+        .sort("time")
+    )
+    assert df.height >= 8000, df.height
+    df.write_csv(DATA / "noaa_tides_hourly.csv")
+
+
 def main() -> None:
     build_theophylline()
     build_coal_disasters()
-    # build_noaa_tides()      # Task 3
+    build_noaa_tides()  # Task 3
     # build_places_diabetes()  # Task 4
     # build_spin_rates()       # Task 5
 
