@@ -14,9 +14,10 @@
 - PyMC 6 selects the nutpie sampler automatically when installed — call `pm.sample(random_seed=42)` **without** a `nuts_sampler=` argument. Every `pm.sample` call passes an explicit integer seed (`random_seed=42`).
 - Run a prior predictive check (`pm.sample_prior_predictive`) and plot it **before** every `pm.sample`; adjust priors if the range is implausible.
 - Use non-centered parameterization for hierarchical group effects.
-- GP teaching order is deliberately exact-first: HSGP is the production default (O(nm) vs O(n³)), but the course teaches `gp.Marginal`/`gp.Latent` on intentionally tiny data (Hours 2–3) to build intuition, then motivates and applies HSGP at scale (Hour 4). Keep every exact-GP example small enough to sample live.
-- Model comparison / LOO is a non-goal, so `pm.compute_log_likelihood` is not required. Persisting `idata` to NetCDF is taught once (Hour 4 workflow section) but not required in the earlier teaching fits, which are re-run live.
-- Every sampled model must complete in ≤ ~2 minutes on a 4-core / 16 GB / GPU-free laptop. To stay in budget, prefer reducing data size or using MAP/HSGP; trim draws only as a last resort and only while `ess_bulk`/`ess_tail` stay > 400.
+- GP teaching order is deliberately exact-first: HSGP is the production default (O(nm) vs O(n³)), but the course teaches `gp.Marginal`/`gp.Latent` (Hours 2–3) to build intuition, then motivates and applies HSGP at scale (Hour 4).
+- Model comparison / LOO is a non-goal, so `pm.compute_log_likelihood` is not required. Persisting `idata` to NetCDF is taught once (Hour 4 workflow section).
+- **Execution time is NOT a design constraint (revised 2026-07-16).** Do not subset data, thin sampling, or cut content to make cells run faster; choose model/data sizes for pedagogical value. A fit taking a few minutes is fine. Smoke-test timeouts are generous upper bounds (e.g. 900s), not budgets to optimize toward. Standard sampling is `draws=1000, tune=1000` (or more where a model needs it for ESS); do not trim draws for speed.
+- **Content density is a first-class requirement (revised 2026-07-16).** Each teaching notebook must fill a ~55–60 min slot: target ≥ ~2,800 markdown words and ≥ ~55 cells, with several worked examples and multiple `mo.accordion` exercises per major section, and rich narrative/intuition/derivation. Thin notebooks are a defect. Reference density: instats 90-min sessions run 3,200–7,500 md words, 57–91 cells. Err rich.
 - No learner notebook fetches data at runtime; all data is read from vendored CSVs in `data/`.
 - Data/plotting stack is polars + plotly. ArviZ is used for diagnostics.
 - Each notebook introduces its dataset with a background cell (what it is, source, why it is a good GP example, units, caveats).
@@ -616,41 +617,56 @@ git commit -m "feat: add environment-check notebook and smoke-test harness"
 
 **Interfaces:**
 - Consumes: `data/theophylline.csv`; `run_notebook` from Task 6.
-- Produces: a taught notebook whose headless run completes ≤ 120s.
+- Produces: a taught notebook that runs headlessly without error (no time budget). **Density target: ≥ ~2,800 markdown words, ≥ ~55 cells**, with multiple worked examples and several `mo.accordion` exercises per part. This is the flagship first hour — build it out richly, not as a terse script.
 
-- [ ] **Step 1: Add the failing smoke test**
+> **This task was expanded on 2026-07-16.** The prior version used a single straight-line baseline and was far too thin (~1,266 md words, 30 cells). The rebuild uses a **piecewise-linear** baseline and roughly doubles the content. Execution time is NOT a constraint — do not thin sampling or content for speed. Standard sampling is `draws=1000, tune=1000, chains=2` (or more if a fit needs it for ESS).
+
+- [ ] **Step 1: Add the failing smoke test** (generous timeout — execution time is not gated)
 
 ```python
 def test_01_foundations():
-    run_notebook(NB / "01_foundations.py", timeout_s=180)
+    run_notebook(NB / "01_foundations.py", timeout_s=900)
 ```
 
 Run: `pixi run pytest tests/test_notebook_smoke.py::test_01_foundations -v` → Expected: FAIL (missing).
 
-- [ ] **Step 2: Build the notebook incrementally (Part A — PyMC primer)**
+- [ ] **Step 2: Part A — Bayesian workflow & PyMC primer (build richly)**
 
-Cells: title/markdown; imports + seed; **background cell** on Theophylline (R `Theoph`, one oral dose per subject, concentration rise-peak-decay, units); load CSV with polars and plot one subject's concentration vs time with plotly; markdown on the Bayesian paradigm (prior/likelihood/posterior); a simple linear regression `pm.Model` on one subject's concentrations (priors `Normal(0,1)`/`HalfNormal(1)` on standardized data), prior predictive check plotted, `pm.sample(random_seed=42)` with a small draw count, `az.summary` via `idata["posterior"]`.
+Cells (each markdown cell substantial, not one-liners):
+- Title + an "in this notebook" overview markdown.
+- Imports + seed + PYMC brand colors + `z()` helper (match `00`/house style).
+- **Motivation markdown**: the modeling problem (unknown functional form), parametric vs nonparametric thinking, why an hour of foundations precedes GPs.
+- **The Bayesian paradigm markdown**: prior, likelihood, posterior with real intuition, Bayes' rule stated, and a small explanatory figure.
+- **Warm-up PyMC model**: estimate a single quantity (e.g. the mean & scale of one subject's concentrations) in `pm.Model` — the smallest model — to introduce the context manager, priors, likelihood, `pm.sample(random_seed=42)`, the returned DataTree, `az.summary` via `idata["posterior"]`, and a trace/rank plot. Prior predictive check plotted and explained.
+- **Theophylline background cell** (R `Theoph`, one oral dose per subject, rise-peak-decay, units) + EDA plotting several subjects with plotly.
+- **Piecewise-linear baseline**: fit a breakpoint/hinge model to one subject — rising slope then falling slope meeting at an estimated peak time `tau`. Priors on both slopes, the level, `tau` (e.g. a Uniform/Normal over the observed time range), and noise; build `mu` with `pm.math.where`/`pytensor` switch or a hinge basis. Prior predictive plotted; `pm.sample(random_seed=42)`; diagnostics (divergences, r_hat, ess); posterior fit plotted with an HDI band via `az.hdi`.
+- **Diagnosis-of-inadequacy markdown + plot**: the kink is unphysical for a smooth PK curve, `tau` is poorly identified (show its posterior width), and straight segments miss the curvature — motivating a flexible function with no hand-specified form.
+- 2–3 `mo.accordion` exercises (e.g. change a prior and re-read the prior predictive; widen/narrow the `tau` prior and inspect identifiability; interpret an ESS/r_hat readout).
 
-Keep the primer sample tiny (1 subject, ~11 points, `draws=500, tune=500, chains=2`) so it runs in seconds.
+- [ ] **Step 3: Part B — GP concepts (build richly)**
 
-- [ ] **Step 3: Build the notebook incrementally (Part B — GP concepts)**
+Cells:
+- **From MVN to GP markdown**: the multivariate normal; then marginalization and conditioning — each stated with the formula AND a worked bivariate numeric example AND a plotly visual (e.g. conditioning a 2D Gaussian, showing the conditional slice). Build to the GP definition (distribution over functions / infinite-dimensional Gaussian).
+- **ExpQuad from scratch exercise** (`mo.accordion` solution: `eta**2 * exp(-0.5*dist**2/ls**2)`), then show the Gram matrix as a heatmap and draw several sample functions from the GP prior on a grid (with jitter), plotted.
+- **Mean & covariance functions** markdown; what each hyperparameter controls.
+- **GP regression = conditioning**: a small worked example conditioning the GP prior on a handful of points to get the posterior over functions; plot posterior mean + band; connect explicitly back to the piecewise-linear failure ("the GP is the flexible function that model couldn't be").
+- **Widget**: `mo.ui.slider` for lengthscale and one for amplitude (with defaults) driving a reactive cell that redraws GP prior samples; a "predict before you move it" prompt.
+- 2–3 more `mo.accordion` exercises (vary hyperparameters; condition on an added point; reason about smoothness).
 
-Cells: markdown on multivariate-normal marginalization/conditioning with a 2D Gaussian plotly visual; markdown defining a GP as a distribution over functions; **exercise** cell "implement the ExpQuad kernel from scratch" with an `mo.accordion` solution computing `eta**2 * exp(-0.5 * dist**2 / ls**2)`; an `mo.ui.slider` for lengthscale and one for amplitude driving a reactive cell that draws several GP prior samples on a grid and plots them; a short "what changed?" markdown prompt.
+- [ ] **Step 4: Check density, then run the smoke test**
 
-- [ ] **Step 4: Run the smoke test to verify it passes**
+Count: confirm ≥ ~2,800 markdown words and ≥ ~55 `@app.cell`s (the density target). If short, add more worked examples/intuition/exercises — do not pad with filler.
+Run: `pixi run pytest tests/test_notebook_smoke.py::test_01_foundations -v` → Expected: PASS (any runtime under the 900s ceiling is fine).
 
-Run: `pixi run pytest tests/test_notebook_smoke.py::test_01_foundations -v`
-Expected: PASS ≤ 180s.
+- [ ] **Step 5: Convention self-check**
 
-- [ ] **Step 5: Open once interactively to eyeball output**
-
-Run: `pixi run marimo edit notebooks/01_foundations.py` (manual visual check of plots/sliders), then close.
+`grep -n nuts_sampler notebooks/01_foundations.py` → only prose matches. Confirm: a prior predictive precedes EACH `pm.sample`; each fit shows divergences + `az.summary` r_hat/ess; DataTree bracket access; GP inputs 2D; HDI bands via `az.hdi`; sliders have defaults; exercises in `mo.accordion`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add notebooks/01_foundations.py tests/test_notebook_smoke.py
-git commit -m "feat: add foundations notebook (PyMC primer + GP concepts)"
+git commit -m "feat: expand foundations notebook (piecewise-linear baseline, fuller GP concepts)"
 ```
 
 ---
@@ -663,13 +679,15 @@ git commit -m "feat: add foundations notebook (PyMC primer + GP concepts)"
 
 **Interfaces:**
 - Consumes: `data/theophylline.csv`, `data/coal_disasters.csv`; `run_notebook`.
-- Produces: a taught notebook whose headless run completes ≤ 150s (two sampled models).
+- Produces: a taught notebook that runs headlessly without error (no time budget). **Density target: ≥ ~2,800 md words, ≥ ~55 cells.**
+
+> **Revised 2026-07-16 — expand to the density target and remove the execution-time budget.** The section outline below is the minimum skeleton; build each part out richly (motivation → intuition → worked example → multiple `mo.accordion` exercises), matching notebook 01's depth. Do NOT subset data or thin sampling for speed; standard sampling `draws=1000, tune=1000`. The full content spec will be finalized when this notebook is rebuilt (after notebook 01 is approved as the template).
 
 - [ ] **Step 1: Add the failing smoke test**
 
 ```python
 def test_02_marginal_latent():
-    run_notebook(NB / "02_marginal_latent_gps.py", timeout_s=180)
+    run_notebook(NB / "02_marginal_latent_gps.py", timeout_s=900)
 ```
 
 Run it → Expected: FAIL (missing).
@@ -703,13 +721,15 @@ git commit -m "feat: add marginal and latent GP notebook"
 
 **Interfaces:**
 - Consumes: `data/noaa_tides_hourly.csv`, `data/places_diabetes.csv`, `data/fastball_spin_rates.csv`; `run_notebook`.
-- Produces: a taught notebook whose headless run completes ≤ 180s.
+- Produces: a taught notebook that runs headlessly without error (no time budget). **Density target: ≥ ~2,800 md words, ≥ ~55 cells.**
+
+> **Revised 2026-07-16 — expand to the density target and remove the execution-time budget.** Build each section out richly to notebook 01's depth; do NOT subset data (drop the `N_EXACT` speed cap — size the NOAA slice for teaching value) or thin sampling for speed. Full content spec finalized when rebuilt (after notebook 01 is approved).
 
 - [ ] **Step 1: Add the failing smoke test**
 
 ```python
 def test_03_kernels_hierarchy():
-    run_notebook(NB / "03_kernels_and_hierarchy.py", timeout_s=240)
+    run_notebook(NB / "03_kernels_and_hierarchy.py", timeout_s=900)
 ```
 
 Run it → Expected: FAIL (missing).
@@ -751,13 +771,15 @@ git commit -m "feat: add kernels, 2D inputs, and hierarchy notebook"
 
 **Interfaces:**
 - Consumes: `data/noaa_tides_hourly.csv`; `run_notebook`.
-- Produces: a taught notebook whose headless run completes ≤ 180s.
+- Produces: a taught notebook that runs headlessly without error (no time budget). **Density target: ≥ ~2,800 md words, ≥ ~55 cells.**
+
+> **Revised 2026-07-16 — expand to the density target and remove the execution-time budget.** Build each section out richly to notebook 01's depth; do NOT thin sampling or shrink `m` for speed. Full content spec finalized when rebuilt (after notebook 01 is approved).
 
 - [ ] **Step 1: Add the failing smoke test**
 
 ```python
 def test_04_scaling_workflow():
-    run_notebook(NB / "04_scaling_and_workflow.py", timeout_s=240)
+    run_notebook(NB / "04_scaling_and_workflow.py", timeout_s=900)
 ```
 
 Run it → Expected: FAIL (missing).
