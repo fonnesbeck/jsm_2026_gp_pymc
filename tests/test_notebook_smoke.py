@@ -29,3 +29,7 @@ def test_01_foundations():
 
 def test_02_marginal_latent():
     run_notebook(NB / "02_marginal_latent_gps.py", timeout_s=180)
+
+
+def test_03_kernels_hierarchy():
+    run_notebook(NB / "03_kernels_and_hierarchy.py", timeout_s=240)
