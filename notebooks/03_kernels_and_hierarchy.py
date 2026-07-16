@@ -813,6 +813,43 @@ def _(places_prior_pred, y_places):
     return (places_prior_draws,)
 
 
+@app.cell
+def _(PYMC_LIGHT_BLUE, go, np, places_prior_draws, y_places):
+    places_prior_fig = go.Figure()
+    rng_plot_places = np.random.default_rng(0)
+    # Markers, not lines: county index has no natural ordering, unlike the time series elsewhere.
+    for _i in rng_plot_places.choice(
+        places_prior_draws.shape[0], size=50, replace=False
+    ):
+        places_prior_fig.add_trace(
+            go.Scatter(
+                x=np.arange(len(y_places)),
+                y=places_prior_draws[_i],
+                mode="markers",
+                marker=dict(color=PYMC_LIGHT_BLUE, size=4),
+                opacity=0.15,
+                showlegend=False,
+            )
+        )
+    places_prior_fig.add_trace(
+        go.Scatter(
+            x=np.arange(len(y_places)),
+            y=y_places,
+            mode="markers",
+            marker=dict(color="black", size=5),
+            name="observed (standardized)",
+        )
+    )
+    places_prior_fig.update_layout(
+        title="Prior predictive draws vs. standardized observed diabetes prevalence",
+        xaxis_title="county index",
+        yaxis_title="diabetes % (standardized)",
+        template="plotly_white",
+    )
+    places_prior_fig
+    return
+
+
 @app.cell(hide_code=True)
 def _(mo, places_prior_draws, y_places):
     mo.md(
@@ -982,6 +1019,9 @@ def _(
     grid_diabetes = (grid_mu * places_diabetes_std + places_diabetes_mean).reshape(
         grid_n, grid_n
     )
+    # Shared color scale so the heatmap and county markers are directly comparable.
+    diabetes_cmin = min(grid_diabetes.min(), places_diabetes.min())
+    diabetes_cmax = max(grid_diabetes.max(), places_diabetes.max())
 
     heatmap_fig = go.Figure()
     heatmap_fig.add_trace(
@@ -990,6 +1030,8 @@ def _(
             y=LAT_MESH[:, 0],
             z=grid_diabetes,
             colorscale="Blues",
+            zmin=diabetes_cmin,
+            zmax=diabetes_cmax,
             colorbar=dict(title="Diabetes %"),
         )
     )
@@ -1002,6 +1044,8 @@ def _(
                 size=7,
                 color=places_diabetes,
                 colorscale="Blues",
+                cmin=diabetes_cmin,
+                cmax=diabetes_cmax,
                 line=dict(color=PYMC_BLUE, width=1),
                 showscale=False,
             ),
@@ -1227,6 +1271,41 @@ def _(spin_prior_pred, spin_z):
         -1, len(spin_z)
     )
     return (spin_prior_draws,)
+
+
+@app.cell
+def _(PYMC_LIGHT_BLUE, day_z, go, np, spin_prior_draws, spin_z):
+    spin_prior_fig = go.Figure()
+    rng_plot_spin = np.random.default_rng(0)
+    # Markers, not lines: three pitchers interleave in day order, so lines would zigzag.
+    for _i in rng_plot_spin.choice(spin_prior_draws.shape[0], size=50, replace=False):
+        spin_prior_fig.add_trace(
+            go.Scatter(
+                x=day_z,
+                y=spin_prior_draws[_i],
+                mode="markers",
+                marker=dict(color=PYMC_LIGHT_BLUE, size=4),
+                opacity=0.15,
+                showlegend=False,
+            )
+        )
+    spin_prior_fig.add_trace(
+        go.Scatter(
+            x=day_z,
+            y=spin_z,
+            mode="markers",
+            marker=dict(color="black", size=5),
+            name="observed (standardized)",
+        )
+    )
+    spin_prior_fig.update_layout(
+        title="Prior predictive draws vs. standardized observed spin rate",
+        xaxis_title="day of season (standardized)",
+        yaxis_title="spin rate (standardized)",
+        template="plotly_white",
+    )
+    spin_prior_fig
+    return
 
 
 @app.cell(hide_code=True)

@@ -856,14 +856,27 @@ def _(hsgp_hours_std):
 
 
 @app.cell
+def _():
+    # Fixed values for the actual full-year fit below — deliberately NOT tied to
+    # the m/c sliders above, which drive only the cheap basis-function demo.
+    # Sampling this model takes ~1 minute and writes an ~800MB idata; if it read
+    # slider .value directly, marimo's autorun would silently retrigger both on
+    # every slider drag. To explore m/c here, edit these constants and re-run
+    # the sampling cell yourself (see the Exercise below).
+    HSGP_M_TREND = 20  # matches the slider's default
+    HSGP_C = 1.5  # matches the slider's default
+    return HSGP_C, HSGP_M_TREND
+
+
+@app.cell
 def _(
-    HSGP_PERIODIC_LS_STD, X_hsgp, c_slider, hsgp_semi_period_std, m_slider, pm, y_hsgp
+    HSGP_C, HSGP_M_TREND, HSGP_PERIODIC_LS_STD, X_hsgp, hsgp_semi_period_std, pm, y_hsgp
 ):
     with pm.Model() as hsgp_model:
         ell_trend = pm.InverseGamma("ell_trend", alpha=5, beta=5)
         eta_trend = pm.HalfNormal("eta_trend", sigma=1)
         cov_trend = eta_trend**2 * pm.gp.cov.Matern52(1, ls=ell_trend)
-        gp_trend = pm.gp.HSGP(m=[m_slider.value], c=c_slider.value, cov_func=cov_trend)
+        gp_trend = pm.gp.HSGP(m=[HSGP_M_TREND], c=HSGP_C, cov_func=cov_trend)
         f_trend = gp_trend.prior("f_trend", X=X_hsgp)
 
         eta_semi = pm.HalfNormal("eta_semi", sigma=1)
@@ -950,7 +963,7 @@ def _(mo):
         r"""
         ### Sampling
 
-        8,760 observations, but only the `m_slider` trend basis
+        8,760 observations, but only the `HSGP_M_TREND` trend basis
         coefficients + 15 periodic basis coefficients + 4 hyperparameters
         are actually sampled (HSGP's fixed-basis, linear-in-$n$ structure
         again) — so despite the data size, this is a small sampling
@@ -989,9 +1002,15 @@ def _(mo):
         this whole workflow — if a later cell crashes, the kernel
         restarts, or a diagnostic call has a bug, an unsaved `idata` means
         resampling everything from scratch. Saving immediately, *before*
-        any inspection, costs almost nothing and is cheap insurance. We
-        revisit this file (and the rest of the diagnostic loop) formally in
-        Part D below.
+        any inspection, is cheap in **time** — but not necessarily in
+        **space**: `f_trend`/`f_semi` are two 8,760-length Deterministics
+        (one full projection per posterior draw), so the *naive* save here
+        would be several hundred megabytes. Since both are an exact linear
+        projection of the much smaller `f_trend_hsgp_coeffs` /
+        `f_semi_hsgp_coeffs_` basis coefficients (which we do keep), we drop
+        them before writing and can recompute them from the coefficients
+        whenever needed. We revisit this file (and the rest of the
+        diagnostic loop) formally in Part D below.
         """
     )
     return
@@ -1001,7 +1020,15 @@ def _(mo):
 def _(Path, hsgp_idata):
     results_dir = Path(__file__).parent.parent / "results"
     results_dir.mkdir(exist_ok=True)
-    hsgp_idata.to_netcdf(str(results_dir / "hsgp.nc"))
+    # Drop the large per-timepoint Deterministics before saving — they are an
+    # exact linear projection of the much smaller HSGP basis coefficients
+    # (also in `idata`), so they can always be recomputed and needn't bloat
+    # the file on disk.
+    hsgp_idata_to_save = hsgp_idata.copy()
+    hsgp_idata_to_save["posterior"] = hsgp_idata_to_save.posterior.ds.drop_vars(
+        ["f_trend", "f_semi"]
+    )
+    hsgp_idata_to_save.to_netcdf(str(results_dir / "hsgp.nc"))
     return (results_dir,)
 
 
@@ -1179,16 +1206,22 @@ def _(mo):
 
         ### Exercise: change `m` and `c` and judge the tradeoff
 
-        Go back to the `m` / `c` sliders above Part C and try two changes,
-        one at a time, then re-run the sampling cell and diagnostics:
+        The `m` / `c` sliders above Part C only drive the cheap basis-function
+        demo — the full-year fit uses the fixed `HSGP_M_TREND` / `HSGP_C`
+        constants defined just above the model cell instead, so that
+        exploring the fit is a deliberate choice rather than something an
+        accidental slider drag retriggers (each fit takes ~1 minute and
+        writes a large `idata`). To try the tradeoff yourself, edit those two
+        constants directly in the code and re-run the model, sampling, and
+        diagnostics cells, one change at a time:
 
-        1. **Drop `m` to something small**, e.g. 8. Does the full-year fit
-           above still track the slow seasonal trend, or does it visibly
-           under-fit (too smooth, missing real drift)?
-        2. **Push `c` up to 3.0 while leaving `m` at its default (20).**
-           Does the fit change much? What happens to the diagnostics
-           (divergences, `ess_bulk`, `r_hat`) as you push $c$ up without
-           also raising $m$?
+        1. **Drop `HSGP_M_TREND` to something small**, e.g. 8. Does the
+           full-year fit above still track the slow seasonal trend, or does
+           it visibly under-fit (too smooth, missing real drift)?
+        2. **Push `HSGP_C` up to 3.0 while leaving `HSGP_M_TREND` at its
+           default (20).** Does the fit change much? What happens to the
+           diagnostics (divergences, `ess_bulk`, `r_hat`) as you push $c$ up
+           without also raising $m$?
 
         Expand below for a discussion once you've tried at least one.
         """
