@@ -185,11 +185,60 @@ def build_noaa_tides(station: str = "9414290", year: int = 2019) -> None:
     df.write_csv(DATA / "noaa_tides_hourly.csv")
 
 
+def build_places_diabetes(state: str = "North Carolina") -> None:
+    # PLACES: Local Data for Better Health, County Data, 2025 release
+    # (Socrata dataset id "swc5-untb"). Verified against a live sample
+    # record on 2026-07-15: the current release has no top-level
+    # `latitude`/`longitude` fields -- the county centroid is nested in a
+    # `geolocation` GeoJSON Point (`coordinates: [lon, lat]`) -- so this
+    # selects `geolocation` instead and unpacks it after fetch.
+    base = "https://data.cdc.gov/resource/swc5-untb.json"
+    params = (
+        f"?$where=statedesc='{state}'"
+        "&$select=locationname,geolocation,measureid,data_value,data_value_type"
+        "&$limit=50000"
+    )
+    response = requests.get(base + params.replace(" ", "%20"), timeout=TIMEOUT)
+    response.raise_for_status()
+    rows = response.json()
+    raw = pl.DataFrame(rows)
+    crude = raw.filter(pl.col("data_value_type") == "Crude prevalence")
+    wide = (
+        crude.filter(pl.col("measureid").is_in(["DIABETES", "OBESITY"]))
+        .with_columns(
+            pl.col("data_value").cast(pl.Float64, strict=False),
+            pl.col("geolocation").struct.field("coordinates").alias("_coords"),
+        )
+        .with_columns(
+            pl.col("_coords").list.get(0).cast(pl.Float64).alias("lon"),
+            pl.col("_coords").list.get(1).cast(pl.Float64).alias("lat"),
+        )
+        .pivot(
+            values="data_value",
+            index=["locationname", "lon", "lat"],
+            on="measureid",
+            aggregate_function="first",
+        )
+        .rename(
+            {
+                "locationname": "county",
+                "DIABETES": "diabetes_pct",
+                "OBESITY": "obesity_pct",
+            }
+        )
+        .select("county", "lon", "lat", "diabetes_pct", "obesity_pct")
+        .drop_nulls()
+        .sort("county")
+    )
+    assert 90 <= wide.height <= 260, wide.height
+    wide.write_csv(DATA / "places_diabetes.csv")
+
+
 def main() -> None:
     build_theophylline()
     build_coal_disasters()
     build_noaa_tides()  # Task 3
-    # build_places_diabetes()  # Task 4
+    build_places_diabetes()  # Task 4
     # build_spin_rates()       # Task 5
 
 

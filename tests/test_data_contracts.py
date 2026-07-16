@@ -32,3 +32,14 @@ def test_noaa_tides_contract():
     assert df["water_level"].is_finite().all()
     # two-week exact-fit slice used in Hour 3 must be small enough to fit live
     assert df.head(300).height == 300
+
+
+def test_places_diabetes_contract():
+    df = pl.read_csv(DATA / "places_diabetes.csv")
+    assert df.columns == ["county", "lon", "lat", "diabetes_pct", "obesity_pct"]
+    assert 90 <= df.height <= 260  # one state's counties
+    assert df["diabetes_pct"].is_finite().all()
+    assert df["diabetes_pct"].min() > 0
+    assert df["diabetes_pct"].max() < 40
+    assert df["lat"].min() > 20 and df["lat"].max() < 55
+    assert df.null_count().sum_horizontal().item() == 0
