@@ -13,33 +13,32 @@ def _():
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        # Marginal and Latent Gaussian Processes
+    mo.md(r"""
+    # Marginal and Latent Gaussian Processes
 
-        Notebook 1 built up the Gaussian process (GP) as a distribution over
-        functions, fully specified by a mean function and a covariance
-        function. This notebook puts that machinery to work in PyMC, in the
-        two settings you will meet again and again.
+    Notebook 1 built up the Gaussian process (GP) as a distribution over
+    functions, fully specified by a mean function and a covariance
+    function. This notebook puts that machinery to work in PyMC, in the
+    two settings you will meet again and again.
 
-        **Part A — the conjugate case.** With a Gaussian likelihood, the
-        latent function $f$ can be integrated out analytically. PyMC exposes
-        this as `pm.gp.Marginal`: fast, exact, and the right default whenever
-        the observation noise is (approximately) Gaussian. We fit it to a
-        single Theophylline subject's concentration curve.
+    **Part A — the conjugate case.** With a Gaussian likelihood, the
+    latent function $f$ can be integrated out analytically. PyMC exposes
+    this as `pm.gp.Marginal`: fast, exact, and the right default whenever
+    the observation noise is (approximately) Gaussian. We fit it to a
+    single Theophylline subject's concentration curve.
 
-        **Part B — the non-conjugate case.** With a non-Gaussian likelihood
-        (here, Poisson counts), $f$ cannot be integrated out in closed form,
-        so it must be sampled directly. PyMC exposes this as `pm.gp.Latent`.
-        We fit it to the classic British coal-mining-disasters count series.
-        """
-    )
+    **Part B — the non-conjugate case.** With a non-Gaussian likelihood
+    (here, Poisson counts), $f$ cannot be integrated out in closed form,
+    so it must be sampled directly. PyMC exposes this as `pm.gp.Latent`.
+    We fit it to the classic British coal-mining-disasters count series.
+    """)
     return
 
 
 @app.cell(hide_code=True)
-def _():
+def _(mo):
     from pathlib import Path
+    from inference_contract import eti, inference_health, posterior_subset
     from time import perf_counter
 
     import arviz as az
@@ -55,7 +54,12 @@ def _():
     PYMC_DARK_GREEN = "#40611F"
 
     RANDOM_SEED = 42
-    rng = np.random.default_rng(RANDOM_SEED)
+    is_script_mode = mo.app_meta().mode == "script"
+    execute_models = is_script_mode or bool(
+        mo.cli_args().get("execute-models", False)
+    )
+    results_dir = Path(__file__).parent.parent / "results"
+    results_dir.mkdir(exist_ok=True)
 
     data_dir = Path(__file__).parent.parent / "data"
 
@@ -65,34 +69,33 @@ def _():
 
     return (
         PYMC_BLUE,
-        PYMC_DARK_GREEN,
         PYMC_GREEN,
         PYMC_LIGHT_BLUE,
         RANDOM_SEED,
         az,
         data_dir,
+        execute_models,
         go,
+        inference_health,
         np,
         perf_counter,
         pl,
         pm,
-        rng,
+        results_dir,
         z,
     )
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## Part A: Marginal GP on the Theophylline curve
+    mo.md(r"""
+    ## Part A: Marginal GP on the Theophylline curve
 
-        Recall the Theophylline dataset from Notebook 1: 12 subjects, each
-        with 11 serum-concentration measurements over 24 hours after a
-        single oral dose. We again work with a single subject's curve — a
-        smooth rise-then-decay shape with no natural parametric form.
-        """
-    )
+    Recall the Theophylline dataset from Notebook 1: 12 subjects, each
+    with 11 serum-concentration measurements over 24 hours after a
+    single oral dose. We again work with a single subject's curve — a
+    smooth rise-then-decay shape with no natural parametric form.
+    """)
     return
 
 
@@ -115,7 +118,6 @@ def _(pl, theoph, z):
 
     X = z(time_vals).reshape(-1, 1)  # GP inputs are 2D: (n, 1)
     y = z(conc_vals)
-
     return (
         X,
         conc_mean,
@@ -154,20 +156,18 @@ def _(PYMC_BLUE, conc_vals, go, subject_id, time_vals):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### A naive first attempt
+    mo.md(r"""
+    ### A naive first attempt
 
-        Let's fit the most straightforward possible GP: a zero-mean
-        `pm.gp.Marginal` with a `Matern52` covariance, evaluated directly on
-        the **standardized raw time** axis. `pm.gp.Marginal` marginalizes
-        the latent function analytically, so `.marginal_likelihood` gives us
-        an exact Gaussian likelihood in the hyperparameters ($\ell$, $\eta$,
-        $\sigma$) — no MCMC over $f$ itself is needed. We optimize with
-        `pm.find_MAP` for a quick first look before committing to full
-        sampling.
-        """
-    )
+    Let's fit the most straightforward possible GP: a zero-mean
+    `pm.gp.Marginal` with a `Matern52` covariance, evaluated directly on
+    the **standardized raw time** axis. `pm.gp.Marginal` marginalizes
+    the latent function analytically, so `.marginal_likelihood` gives us
+    an exact Gaussian likelihood in the hyperparameters ($\ell$, $\eta$,
+    $\sigma$) — no MCMC over $f$ itself is needed. We optimize with
+    `pm.find_MAP` for a quick first look before committing to full
+    sampling.
+    """)
     return
 
 
@@ -181,11 +181,23 @@ def _(X, pm, y):
         cov_naive = eta_naive**2 * pm.gp.cov.Matern52(1, ls=ell_naive)
         gp_naive = pm.gp.Marginal(cov_func=cov_naive)
         gp_naive.marginal_likelihood("y", X=X, y=y, sigma=sigma_naive)
+    return gp_naive, naive_model
 
+
+@app.cell
+def _(mo):
+    naive_map_button = mo.ui.run_button(label="Optimize naive MAP")
+    naive_map_button
+    return (naive_map_button,)
+
+
+@app.cell
+def _(execute_models, mo, naive_map_button, naive_model, pm):
+    mo.stop(not (naive_map_button.value or execute_models))
     with naive_model:
         map_naive = pm.find_MAP(progressbar=False)
-
-    return gp_naive, map_naive, naive_model
+    print("Naive MAP optimization complete")
+    return (map_naive,)
 
 
 @app.cell
@@ -194,8 +206,8 @@ def _(
     conc_mean,
     conc_std,
     conc_vals,
-    gp_naive,
     go,
+    gp_naive,
     map_naive,
     naive_model,
     np,
@@ -258,27 +270,25 @@ def _(
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Why the naive fit struggles
+    mo.md(r"""
+    ### Why the naive fit struggles
 
-        The observed time points are very unevenly spaced: dense near
-        $t=0$ (0, 0.25, 0.57, 1.12, 2.02 hours — where concentration is
-        rising fastest) and sparse in the tail (9.05, 12.12, 24.37 hours —
-        where it is decaying slowly). A single global lengthscale
-        $\ell$ has to compromise between these two regimes: fine enough to
-        catch the fast rise, coarse enough not to overfit noise in the long,
-        sparsely-sampled tail. The MAP fit above visibly overshoots the
-        early rise and is under-constrained past $t \approx 12$.
+    The observed time points are very unevenly spaced: dense near
+    $t=0$ (0, 0.25, 0.57, 1.12, 2.02 hours — where concentration is
+    rising fastest) and sparse in the tail (9.05, 12.12, 24.37 hours —
+    where it is decaying slowly). A single global lengthscale
+    $\ell$ has to compromise between these two regimes: fine enough to
+    catch the fast rise, coarse enough not to overfit noise in the long,
+    sparsely-sampled tail. The MAP fit above visibly overshoots the
+    early rise and is under-constrained past $t \approx 12$.
 
-        Two standard fixes: **transform the input** so that the regions of
-        genuinely different curvature are given comparable spacing (here,
-        `log1p(time)` compresses the long tail without needing a second
-        lengthscale), and/or **add a mean function** so the GP only needs to
-        model the residual departure from a simple parametric trend rather
-        than the whole curve. We'll use both below.
-        """
-    )
+    Two standard fixes: **transform the input** so that the regions of
+    genuinely different curvature are given comparable spacing (here,
+    `log1p(time)` compresses the long tail without needing a second
+    lengthscale), and/or **add a mean function** so the GP only needs to
+    model the residual departure from a simple parametric trend rather
+    than the whole curve. We'll use both below.
+    """)
     return
 
 
@@ -304,19 +314,16 @@ def _(X_log, pm, y):
 
         gp = pm.gp.Marginal(mean_func=mean_func, cov_func=cov_func)
         gp.marginal_likelihood("y", X=X_log, y=y, sigma=sigma)
-
     return gp, gp_model
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Prior predictive check
+    mo.md(r"""
+    ### Prior predictive check
 
-        As always, we look at what the model implies *before* fitting.
-        """
-    )
+    As always, we look at what the model implies *before* fitting.
+    """)
     return
 
 
@@ -379,104 +386,133 @@ def _(mo, prior_draws, y):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Conjugacy: why the latent function integrates out
+    mo.md(r"""
+    ### Conjugacy: why the latent function integrates out
 
-        `pm.gp.Marginal` earns its name from a piece of algebra worth seeing
-        once. Write the model at the observed inputs $X$ as a latent Gaussian
-        vector $\mathbf f \sim \mathcal N(\mathbf m,\ K)$ with $K = k(X, X)$,
-        and a Gaussian observation layer
-        $\mathbf y \mid \mathbf f \sim \mathcal N(\mathbf f,\ \sigma^2 I)$.
-        Because *both* pieces are Gaussian, the joint over
-        $(\mathbf f, \mathbf y)$ is Gaussian, and a Gaussian integrated over one
-        of its blocks is Gaussian again — the **marginalization** property from
-        Notebook 1. Integrating $\mathbf f$ out gives the **marginal
-        likelihood** in closed form:
+    `pm.gp.Marginal` earns its name from a piece of algebra worth seeing
+    once. Write the model at the observed inputs $X$ as a latent Gaussian
+    vector $\mathbf f \sim \mathcal N(\mathbf m,\ K)$ with $K = k(X, X)$,
+    and a Gaussian observation layer
+    $\mathbf y \mid \mathbf f \sim \mathcal N(\mathbf f,\ \sigma^2 I)$.
+    Because *both* pieces are Gaussian, the joint over
+    $(\mathbf f, \mathbf y)$ is Gaussian, and a Gaussian integrated over one
+    of its blocks is Gaussian again — the **marginalization** property from
+    Notebook 1. Integrating $\mathbf f$ out gives the **marginal
+    likelihood** in closed form:
 
-        $$\mathbf y \sim \mathcal N\big(\mathbf m,\ K + \sigma^2 I\big).$$
+    $$\mathbf y \sim \mathcal N\big(\mathbf m,\ K + \sigma^2 I\big).$$
 
-        No latent $\mathbf f$ appears — the function values have been absorbed
-        into the $n \times n$ covariance $K + \sigma^2 I$. This is exactly what
-        `.marginal_likelihood("y", X=X, y=y, sigma=sigma)` evaluates. The only
-        free unknowns left are the handful of hyperparameters
-        $(\ell, \eta, \sigma)$ plus the two mean-function coefficients — **five
-        scalars**, instead of $\mathbf f$'s 11 values *and* the hyperparameters.
-        """
-    )
+    No latent $\mathbf f$ appears — the function values have been absorbed
+    into the $n \times n$ covariance $K + \sigma^2 I$. This is exactly what
+    `.marginal_likelihood("y", X=X, y=y, sigma=sigma)` evaluates. The only
+    free unknowns left are the handful of hyperparameters
+    $(\ell, \eta, \sigma)$ plus the two mean-function coefficients — **five
+    scalars**, instead of $\mathbf f$'s 11 values *and* the hyperparameters.
+    """)
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        The same conjugacy delivers predictions in closed form. For test inputs
-        $X_*$, the posterior over the latent function is Gaussian with
+    mo.md(r"""
+    The same conjugacy delivers predictions in closed form. For test inputs
+    $X_*$, the posterior over the latent function is Gaussian with
 
-        $$\mathbb E[\mathbf f_* \mid \mathbf y]
-        = \mathbf m_* + K_*(K + \sigma^2 I)^{-1}(\mathbf y - \mathbf m),$$
+    $$\mathbb E[\mathbf f_* \mid \mathbf y]
+    = \mathbf m_* + K_*(K + \sigma^2 I)^{-1}(\mathbf y - \mathbf m),$$
 
-        $$\operatorname{Cov}[\mathbf f_* \mid \mathbf y]
-        = K_{**} - K_*(K + \sigma^2 I)^{-1}K_*^\top,$$
+    $$\operatorname{Cov}[\mathbf f_* \mid \mathbf y]
+    = K_{**} - K_*(K + \sigma^2 I)^{-1}K_*^\top,$$
 
-        with $K_* = k(X_*, X)$ and $K_{**} = k(X_*, X_*)$ — the identical
-        conditioning formula you applied by hand in Notebook 1, now with a
-        learned mean function $\mathbf m$ subtracted off first. Two consequences
-        we lean on below:
+    with $K_* = k(X_*, X)$ and $K_{**} = k(X_*, X_*)$ — the identical
+    conditioning formula you applied by hand in Notebook 1, now with a
+    learned mean function $\mathbf m$ subtracted off first. Two consequences
+    we lean on below:
 
-        - **Every hyperparameter draw yields an *exact* predictive Gaussian.**
-          There is no Monte-Carlo error in $\mathbf f$ given
-          $(\ell, \eta, \sigma)$; the only thing we sample over is the
-          hyperparameters themselves.
-        - **The $(K + \sigma^2 I)^{-1}$ solve is $O(n^3)$.** With $n = 11$ that
-          is nothing, but it is the exact cost that motivates the sparse and
-          HSGP approximations in Hour 4. Conjugacy buys exactness at a cubic
-          price.
-        """
-    )
+    - **Every hyperparameter draw yields an *exact* predictive Gaussian.**
+      There is no Monte-Carlo error in $\mathbf f$ given
+      $(\ell, \eta, \sigma)$; the only thing we sample over is the
+      hyperparameters themselves.
+    - **The $(K + \sigma^2 I)^{-1}$ solve is $O(n^3)$.** With $n = 11$ that
+      is nothing, but it is the exact cost that motivates the sparse and
+      HSGP approximations in Hour 4. Conjugacy buys exactness at a cubic
+      price.
+    """)
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### MAP vs. full posterior
+    mo.md(r"""
+    ### MAP vs. full posterior
 
-        `pm.gp.Marginal` only ever samples the **hyperparameters**
-        ($\ell$, $\eta$, $\sigma$, and the two mean-function coefficients) —
-        five scalars, since $f$ itself is marginalized out analytically.
-        That makes both a MAP optimization and full MCMC cheap; let's do
-        both and compare.
-        """
-    )
+    `pm.gp.Marginal` only ever samples the **hyperparameters**
+    ($\ell$, $\eta$, $\sigma$, and the two mean-function coefficients) —
+    five scalars, since $f$ itself is marginalized out analytically.
+    That makes both a MAP optimization and full MCMC cheap; let's do
+    both and compare.
+    """)
     return
 
 
 @app.cell
-def _(gp_model, pm):
+def _(execute_models, gp_model, mo, pm, structured_map_button):
+    mo.stop(not (structured_map_button.value or execute_models))
     with gp_model:
         map_estimate = pm.find_MAP(progressbar=False)
     return (map_estimate,)
 
 
 @app.cell
-def _(RANDOM_SEED, gp_model, pm):
+def _(mo):
+    structured_map_button = mo.ui.run_button(label="Optimize structured MAP")
+    structured_map_button
+    return (structured_map_button,)
+
+
+@app.cell
+def _(mo):
+    structured_fit_button = mo.ui.run_button(label="Fit structured GP")
+    structured_fit_button
+    return (structured_fit_button,)
+
+
+@app.cell
+def _(
+    RANDOM_SEED,
+    execute_models,
+    gp_model,
+    mo,
+    pm,
+    results_dir,
+    structured_fit_button,
+):
+    mo.stop(not (structured_fit_button.value or execute_models))
     with gp_model:
-        idata = pm.sample(random_seed=RANDOM_SEED, target_accept=0.95)
+        idata = pm.sample(
+            chains=4,
+            random_seed=RANDOM_SEED,
+        )
+    idata.to_netcdf(results_dir / "02_marginal_gp.nc")
     return (idata,)
 
 
 @app.cell
-def _(az, idata):
-    n_div = idata["sample_stats"]["diverging"].sum().item()
+def _(mo):
+    coal_fit_button = mo.ui.run_button(label="Fit coal latent GP")
+    coal_fit_button
+    return (coal_fit_button,)
+
+
+@app.cell
+def _(gp_model, idata, inference_health):
+    summary, health_passed = inference_health(idata, gp_model)
+    n_div = summary.attrs["divergences"]
     n_draws_total = idata["posterior"].sizes["chain"] * idata["posterior"].sizes["draw"]
-    summary = az.summary(idata["posterior"])
     min_ess_bulk = float(summary["ess_bulk"].min())
     min_ess_tail = float(summary["ess_tail"].min())
     max_rhat = float(summary["r_hat"].astype(float).max())
-    print(f"Divergences: {n_div} / {n_draws_total}")
+    print(f"Divergences: {n_div} / {n_draws_total}; health passed: {health_passed}")
     summary
     return max_rhat, min_ess_bulk, min_ess_tail, n_div, n_draws_total, summary
 
@@ -530,34 +566,32 @@ def _(map_estimate, pl, summary):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        The table lines up the two point summaries for all five
-        hyperparameters. They agree to within a posterior standard deviation
-        here, which is the *good* case: a low-dimensional, well-identified
-        hyperparameter posterior that is roughly symmetric, so its mode (MAP)
-        and its mean nearly coincide. When should you trust MAP, and when not?
+    mo.md(r"""
+    The table lines up the two point summaries for all five
+    hyperparameters. They agree to within a posterior standard deviation
+    here, which is the *good* case: a low-dimensional, well-identified
+    hyperparameter posterior that is roughly symmetric, so its mode (MAP)
+    and its mean nearly coincide. When should you trust MAP, and when not?
 
-        - **MAP is appropriate** as a fast first look, for initialization, or
-          when the hyperparameter posterior is tight and unimodal and you
-          genuinely only need a point estimate. It is a single optimization —
-          cheap and deterministic.
-        - **MAP misses** everything about the *shape* of the posterior. It
-          reports no uncertainty, so it cannot tell you the lengthscale is only
-          known to within some range; it sits at the mode, which for a skewed
-          posterior (lengthscales often are) can be far from the mean; it can
-          settle on a local optimum; and — the subtle one — a MAP *prediction*
-          plugs in a single hyperparameter value, so its predictive band
-          understates uncertainty because it ignores the spread over
-          $(\ell, \eta, \sigma)$ entirely.
+    - **MAP is appropriate** as a fast first look, for initialization, or
+      when the hyperparameter posterior is tight and unimodal and you
+      genuinely only need a point estimate. It is a single optimization —
+      cheap and deterministic.
+    - **MAP misses** everything about the *shape* of the posterior. It
+      reports no uncertainty, so it cannot tell you the lengthscale is only
+      known to within some range; it sits at the mode, which for a skewed
+      posterior (lengthscales often are) can be far from the mean; it can
+      settle on a local optimum; and — the subtle one — a MAP *prediction*
+      plugs in a single hyperparameter value, so its predictive band
+      understates uncertainty because it ignores the spread over
+      $(\ell, \eta, \sigma)$ entirely.
 
-        Full MCMC propagates hyperparameter uncertainty into every prediction:
-        we draw many $(\ell, \eta, \sigma)$, form the exact predictive Gaussian
-        for each (conjugacy again), and mix them. That mixture is wider — and
-        more honest — than any single MAP curve, which is why the fit below uses
-        the full posterior rather than `map_estimate`.
-        """
-    )
+    Full MCMC propagates hyperparameter uncertainty into every prediction:
+    we draw many $(\ell, \eta, \sigma)$, form the exact predictive Gaussian
+    for each (conjugacy again), and mix them. That mixture is wider — and
+    more honest — than any single MAP curve, which is why the fit below uses
+    the full posterior rather than `map_estimate`.
+    """)
     return
 
 
@@ -573,11 +607,11 @@ def _(Xnew, gp, gp_model):
     with gp_model:
         f_pred = gp.conditional("f_pred", Xnew)
         f_pred_noise = gp.conditional("f_pred_noise", Xnew, pred_noise=True)
-    return f_pred, f_pred_noise
+    return
 
 
 @app.cell
-def _(RANDOM_SEED, f_pred, f_pred_noise, gp_model, idata, pm):
+def _(RANDOM_SEED, gp_model, idata, pm):
     with gp_model:
         ppc = pm.sample_posterior_predictive(
             idata, var_names=["f_pred", "f_pred_noise"], random_seed=RANDOM_SEED
@@ -666,47 +700,43 @@ def _(
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        The narrower band is uncertainty in the latent function $f$ alone
-        (`pred_noise=False`); the wider band additionally folds in the
-        observation noise $\sigma$ (`pred_noise=True`) and is the right one
-        to compare against *new, unobserved measurements*. The transformed
-        input plus linear mean function now trace the rise, peak, and decay
-        far more faithfully than the naive fit.
-        """
-    )
+    mo.md(r"""
+    The narrower band is uncertainty in the latent function $f$ alone
+    (`pred_noise=False`); the wider band additionally folds in the
+    observation noise $\sigma$ (`pred_noise=True`) and is the right one
+    to compare against *new, unobserved measurements*. The transformed
+    input plus linear mean function now trace the rise, peak, and decay
+    far more faithfully than the naive fit.
+    """)
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### What `pred_noise` actually changes
+    mo.md(r"""
+    ### What `pred_noise` actually changes
 
-        The two bands differ by exactly one term, and it is worth being precise
-        about which. Writing the predictive variance at a test point $x_*$:
+    The two bands differ by exactly one term, and it is worth being precise
+    about which. Writing the predictive variance at a test point $x_*$:
 
-        - `pred_noise=False` returns $\operatorname{Var}[f(x_*) \mid \mathbf y]$
-          — the uncertainty in the *latent function* $f$ at $x_*$. Use this when
-          you care about the underlying smooth curve ("what is the true
-          concentration trajectory?").
-        - `pred_noise=True` returns
-          $\operatorname{Var}[f(x_*) \mid \mathbf y] + \sigma^2$ — the latent
-          uncertainty *plus* the observation-noise variance. Use this when you
-          care about a *new measurement* ("what will the assay read if I draw
-          blood at 5 hours?"), because a real measurement carries the same
-          $\sigma$ scatter the training points did.
+    - `pred_noise=False` returns $\operatorname{Var}[f(x_*) \mid \mathbf y]$
+      — the uncertainty in the *latent function* $f$ at $x_*$. Use this when
+      you care about the underlying smooth curve ("what is the true
+      concentration trajectory?").
+    - `pred_noise=True` returns
+      $\operatorname{Var}[f(x_*) \mid \mathbf y] + \sigma^2$ — the latent
+      uncertainty *plus* the observation-noise variance. Use this when you
+      care about a *new measurement* ("what will the assay read if I draw
+      blood at 5 hours?"), because a real measurement carries the same
+      $\sigma$ scatter the training points did.
 
-        The gap between the bands is therefore a **constant $\sigma^2$ in
-        variance** — uniform across the whole grid, since observation noise does
-        not depend on *where* you predict. That is why the outer band sits a
-        fixed vertical distance outside the inner one even where the data are
-        dense and the latent band is tight. The cell below reads off that
-        constant gap in the original mg/L units.
-        """
-    )
+    The gap between the bands is therefore a **constant $\sigma^2$ in
+    variance** — uniform across the whole grid, since observation noise does
+    not depend on *where* you predict. That is why the outer band sits a
+    fixed vertical distance outside the inner one even where the data are
+    dense and the latent band is tight. The cell below reads off that
+    constant gap in the original mg/L units.
+    """)
     return
 
 
@@ -722,17 +752,15 @@ def _(conc_std, summary):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Exercise: extrapolate beyond the observed time range
+    mo.md(r"""
+    ### Exercise: extrapolate beyond the observed time range
 
-        Predict out to, say, 40 hours past dose — well beyond the last
-        observation at 24.37 hours — using `gp.predict` at the posterior
-        mean hyperparameters. What happens to the mean and the uncertainty
-        band as you move past the data? Expand the solution below once
-        you've made a prediction.
-        """
-    )
+    Predict out to, say, 40 hours past dose — well beyond the last
+    observation at 24.37 hours — using `gp.predict` at the posterior
+    mean hyperparameters. What happens to the mean and the uncertainty
+    band as you move past the data? Expand the solution below once
+    you've made a prediction.
+    """)
     return
 
 
@@ -909,22 +937,20 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## Part B: Latent Poisson GP on coal-mining disasters
+    mo.md(r"""
+    ## Part B: Latent Poisson GP on coal-mining disasters
 
-        ### Background
+    ### Background
 
-        The `coal_disasters` dataset records the number of British
-        coal-mining disasters causing 10 or more deaths, by year, from 1851
-        to 1962 (112 annual counts) — a classic changepoint / intensity-
-        estimation dataset in the Bayesian literature (Raftery & Akman,
-        1986). The rate of disasters is believed to have declined over this
-        period (improved safety regulation), but not necessarily smoothly
-        or via any particular parametric form — another natural fit for a
-        GP, this time on the log-rate of a **Poisson** count process.
-        """
-    )
+    The `coal_disasters` dataset records the number of British
+    coal-mining disasters causing 10 or more deaths, by year, from 1851
+    to 1962 (112 annual counts) — a classic changepoint / intensity-
+    estimation dataset in the Bayesian literature (Raftery & Akman,
+    1986). The rate of disasters is believed to have declined over this
+    period (improved safety regulation), but not necessarily smoothly
+    or via any particular parametric form — another natural fit for a
+    GP, this time on the log-rate of a **Poisson** count process.
+    """)
     return
 
 
@@ -940,7 +966,6 @@ def _(coal, z):
     disaster_counts = coal["disasters"].to_numpy()
 
     t = z(year_vals).reshape(-1, 1)  # GP inputs are 2D: (n, 1)
-
     return disaster_counts, t, year_vals
 
 
@@ -967,64 +992,60 @@ def _(PYMC_BLUE, disaster_counts, go, year_vals):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Why we can't marginalize here
+    mo.md(r"""
+    ### Why we can't marginalize here
 
-        `pm.gp.Marginal` relies on the Gaussian likelihood's conjugacy: if
-        $y \mid f \sim \mathcal{N}(f, \sigma^2)$ and $f$ is a GP, then $f$
-        can be integrated out in closed form, leaving a tractable marginal
-        likelihood in $y$ alone. A Poisson likelihood,
-        $y \mid f \sim \mathrm{Poisson}(e^f)$, has no such conjugate form —
-        there is no analytic way to integrate $f$ out of the joint
-        distribution. So instead of marginalizing, `pm.gp.Latent` keeps the
-        vector of latent function values $f$ as an explicit set of
-        parameters (one per observed year here) and lets NUTS sample them
-        jointly with the covariance hyperparameters. This is more
-        expensive — we are now sampling a 112-dimensional latent vector
-        plus hyperparameters, rather than 2–5 hyperparameters alone — but
-        it is the only exact option once the likelihood leaves the Gaussian
-        family.
-        """
-    )
+    `pm.gp.Marginal` relies on the Gaussian likelihood's conjugacy: if
+    $y \mid f \sim \mathcal{N}(f, \sigma^2)$ and $f$ is a GP, then $f$
+    can be integrated out in closed form, leaving a tractable marginal
+    likelihood in $y$ alone. A Poisson likelihood,
+    $y \mid f \sim \mathrm{Poisson}(e^f)$, has no such conjugate form —
+    there is no analytic way to integrate $f$ out of the joint
+    distribution. So instead of marginalizing, `pm.gp.Latent` keeps the
+    vector of latent function values $f$ as an explicit set of
+    parameters (one per observed year here) and lets NUTS sample them
+    jointly with the covariance hyperparameters. This is more
+    expensive — we are now sampling a 112-dimensional latent vector
+    plus hyperparameters, rather than 2–5 hyperparameters alone — but
+    it is the only exact option once the likelihood leaves the Gaussian
+    family.
+    """)
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### From latent function to disaster rate: the exp link
+    mo.md(r"""
+    ### From latent function to disaster rate: the exp link
 
-        It is worth tracing the generative chain the model encodes, because it
-        is the template for *every* non-Gaussian GP. For each year $t_i$:
+    It is worth tracing the generative chain the model encodes, because it
+    is the template for *every* non-Gaussian GP. For each year $t_i$:
 
-        1. A **latent function value** $f(t_i)$ is drawn jointly from the GP
-           prior — these are the 112 correlated values `f = gp.prior("f", X=t)`.
-           On this scale $f$ is unconstrained: it can be any real number,
-           positive or negative, and neighbouring years are correlated through
-           the Matérn kernel.
-        2. An **exp link** maps it to a positive rate,
-           $\lambda(t_i) = \exp\!\big(f(t_i)\big)$. Exponentiating guarantees
-           $\lambda > 0$ (a Poisson mean must be positive) and makes the GP a
-           model of the **log-rate**, so a straight-line drop in $f$ is a
-           constant *proportional* decline in the rate — the natural scale for
-           counts.
-        3. A **Poisson likelihood** turns the rate into observed counts,
-           $y_i \sim \mathrm{Poisson}\big(\lambda(t_i)\big)$.
+    1. A **latent function value** $f(t_i)$ is drawn jointly from the GP
+       prior — these are the 112 correlated values `f = gp.prior("f", X=t)`.
+       On this scale $f$ is unconstrained: it can be any real number,
+       positive or negative, and neighbouring years are correlated through
+       the Matérn kernel.
+    2. An **exp link** maps it to a positive rate,
+       $\lambda(t_i) = \exp\!\big(f(t_i)\big)$. Exponentiating guarantees
+       $\lambda > 0$ (a Poisson mean must be positive) and makes the GP a
+       model of the **log-rate**, so a straight-line drop in $f$ is a
+       constant *proportional* decline in the rate — the natural scale for
+       counts.
+    3. A **Poisson likelihood** turns the rate into observed counts,
+       $y_i \sim \mathrm{Poisson}\big(\lambda(t_i)\big)$.
 
-        Contrast this directly with Part A. There, the link was the identity and
-        the noise was Gaussian, so step 1's latent values integrated out and we
-        sampled only five hyperparameters. Here the exp link and Poisson
-        likelihood break conjugacy: there is no closed form for
-        $\int \prod_i \mathrm{Poisson}(y_i \mid e^{f_i})\,
-        \mathcal N(\mathbf f \mid \mathbf 0, K)\, d\mathbf f$, so we have no
-        choice but to **keep $\mathbf f$ in the model and let NUTS explore all
-        112 values jointly** with $(\ell, \eta)$. Carrying $\mathbf f$ explicitly
-        is the price of leaving the Gaussian family — and the reason latent GPs
-        sample more slowly than marginal ones.
-        """
-    )
+    Contrast this directly with Part A. There, the link was the identity and
+    the noise was Gaussian, so step 1's latent values integrated out and we
+    sampled only five hyperparameters. Here the exp link and Poisson
+    likelihood break conjugacy: there is no closed form for
+    $\int \prod_i \mathrm{Poisson}(y_i \mid e^{f_i})\,
+    \mathcal N(\mathbf f \mid \mathbf 0, K)\, d\mathbf f$, so we have no
+    choice but to **keep $\mathbf f$ in the model and let NUTS explore all
+    112 values jointly** with $(\ell, \eta)$. Carrying $\mathbf f$ explicitly
+    is the price of leaving the Gaussian family — and the reason latent GPs
+    sample more slowly than marginal ones.
+    """)
     return
 
 
@@ -1040,13 +1061,14 @@ def _(disaster_counts, pm, t):
 
         rate = pm.Deterministic("rate", pm.math.exp(f_coal))
         pm.Poisson("y", mu=rate, observed=disaster_counts)
-
     return (coal_model,)
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(r"""### Prior predictive check""")
+    mo.md(r"""
+    ### Prior predictive check
+    """)
     return
 
 
@@ -1058,7 +1080,7 @@ def _(RANDOM_SEED, coal_model, pm):
 
 
 @app.cell
-def _(PYMC_GREEN, coal_prior_pred, disaster_counts, go, np, year_vals):
+def _(coal_prior_pred, disaster_counts, go, np, year_vals):
     coal_prior_draws = coal_prior_pred["prior_predictive"]["y"].values.reshape(
         -1, len(year_vals)
     )
@@ -1110,58 +1132,58 @@ def _(coal_prior_draws, disaster_counts, mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Sampling
+    mo.md(r"""
+    ### Sampling
 
-        112 latent function values plus 2 covariance hyperparameters. We use
-        `draws=1500, tune=1000, chains=2` (slightly more draws than the
-        `1000` default, to comfortably clear the `ess_bulk > 400` bar across
-        all 112 latent values) and raise `target_accept` to 0.95, which is
-        typical for latent GPs (the funnel between $f$ and its lengthscale
-        is more delicate than in the marginal case).
-        """
-    )
+    112 latent function values plus 2 covariance hyperparameters. We use
+    `draws=1500, tune=1000, chains=2` (slightly more draws than the
+    `1000` default, to comfortably clear the `ess_bulk > 400` bar across
+    all 112 latent values) and raise `target_accept` to 0.95, which is
+    typical for latent GPs (the funnel between $f$ and its lengthscale
+    is more delicate than in the marginal case).
+    """)
     return
 
 
 @app.cell
-def _(RANDOM_SEED, coal_model, perf_counter, pm):
+def _(
+    RANDOM_SEED,
+    coal_fit_button,
+    coal_model,
+    execute_models,
+    mo,
+    perf_counter,
+    pm,
+    results_dir,
+):
+    mo.stop(not (coal_fit_button.value or execute_models))
     with coal_model:
         _start = perf_counter()
         coal_idata = pm.sample(
             random_seed=RANDOM_SEED,
-            target_accept=0.95,
             draws=1500,
             tune=1000,
-            chains=2,
+            chains=4,
         )
         coal_sample_seconds = perf_counter() - _start
+    coal_idata.to_netcdf(results_dir / "02_coal_latent_gp.nc")
     print(f"Coal latent-GP sampling wall-time: {coal_sample_seconds:.1f}s")
     return coal_idata, coal_sample_seconds
 
 
 @app.cell
-def _(az, coal_idata):
-    coal_n_div = coal_idata["sample_stats"]["diverging"].sum().item()
+def _(coal_idata, coal_model, inference_health):
+    coal_summary, coal_health_passed = inference_health(coal_idata, coal_model)
+    coal_n_div = coal_summary.attrs["divergences"]
     coal_n_draws_total = (
         coal_idata["posterior"].sizes["chain"] * coal_idata["posterior"].sizes["draw"]
     )
-    coal_summary = az.summary(coal_idata["posterior"], var_names=["ell", "eta"])
-    coal_f_summary = az.summary(coal_idata["posterior"], var_names=["f"])
-    coal_min_ess_bulk = float(
-        min(coal_summary["ess_bulk"].min(), coal_f_summary["ess_bulk"].min())
-    )
-    coal_min_ess_tail = float(
-        min(coal_summary["ess_tail"].min(), coal_f_summary["ess_tail"].min())
-    )
-    coal_max_rhat = max(
-        coal_summary["r_hat"].astype(float).max(),
-        coal_f_summary["r_hat"].astype(float).max(),
-    )
+    coal_min_ess_bulk = float(coal_summary["ess_bulk"].min())
+    coal_min_ess_tail = float(coal_summary["ess_tail"].min())
+    coal_max_rhat = float(coal_summary["r_hat"].astype(float).max())
     print(f"Divergences: {coal_n_div} / {coal_n_draws_total}")
     print(
-        f"Min ess_bulk / ess_tail (hyperparams + f): {coal_min_ess_bulk:.0f} / {coal_min_ess_tail:.0f}"
+        f"Min ess_bulk / ess_tail (all free RVs): {coal_min_ess_bulk:.0f} / {coal_min_ess_tail:.0f}; health passed: {coal_health_passed}"
     )
     coal_summary
     return (
@@ -1245,18 +1267,16 @@ def _(PYMC_BLUE, az, coal_idata, disaster_counts, go, np, year_vals):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### The posterior is a distribution over rate *functions*
+    mo.md(r"""
+    ### The posterior is a distribution over rate *functions*
 
-        The HDI band above summarizes the posterior, but it can hide that each
-        posterior draw is a whole *function*. Plotting sixty individual draws of
-        $\exp(f)$ makes the object concrete: the model is uncertain not about a
-        few numbers but about the entire trajectory, and the draws fan out where
-        data are sparse (the early years, few disasters to pin the rate) and
-        pull together where the counts are more informative.
-        """
-    )
+    The HDI band above summarizes the posterior, but it can hide that each
+    posterior draw is a whole *function*. Plotting sixty individual draws of
+    $\exp(f)$ makes the object concrete: the model is uncertain not about a
+    few numbers but about the entire trajectory, and the draws fan out where
+    data are sparse (the early years, few disasters to pin the rate) and
+    pull together where the counts are more informative.
+    """)
     return
 
 
@@ -1344,20 +1364,18 @@ def _(mo, pct_decline, rate_1851, rate_1900, rate_1962):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        The latent rate shows a clear decline over the period with no
-        sharp changepoint imposed — the GP infers the shape of the decline
-        (which looks like it happens over some decades around the turn of
-        the century) directly from the data, unlike a two-regime
-        changepoint model.
+    mo.md(r"""
+    The latent rate shows a clear decline over the period with no
+    sharp changepoint imposed — the GP infers the shape of the decline
+    (which looks like it happens over some decades around the turn of
+    the century) directly from the data, unlike a two-regime
+    changepoint model.
 
-        ### Posterior predictive check
+    ### Posterior predictive check
 
-        Finally, we simulate new counts from the fitted model and check
-        that they bracket the observed series.
-        """
-    )
+    Finally, we simulate new counts from the fitted model and check
+    that they bracket the observed series.
+    """)
     return
 
 
@@ -1419,44 +1437,30 @@ def _(PYMC_GREEN, coal_ppc, disaster_counts, go, np, year_vals):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        Observed counts fall consistently within the posterior predictive
-        interval, and the mean tracks the visible decline in disaster
-        frequency — the model captures the broad structure of the series.
-        """
-    )
+    mo.md(r"""
+    Observed counts fall consistently within the posterior predictive
+    interval, and the mean tracks the visible decline in disaster
+    frequency — the model captures the broad structure of the series.
+    """)
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Exercise: change the lengthscale prior and compare
+    mo.md(r"""
+    ### Exercise: change the lengthscale prior and compare
 
-        The `ell ~ InverseGamma(5, 5)` prior above is weakly informative on
-        the standardized year scale. What happens to the *prior* on the
-        implied rate function if we instead favor much shorter
-        lengthscales — say `InverseGamma(2, 1)`, which puts more mass near
-        zero? Try it yourself, then expand the solution below.
-        """
-    )
+    The `ell ~ InverseGamma(5, 5)` prior above is weakly informative on
+    the standardized year scale. What happens to the *prior* on the
+    implied rate function if we instead favor much shorter
+    lengthscales — say `InverseGamma(2, 1)`, which puts more mass near
+    zero? Try it yourself, then expand the solution below.
+    """)
     return
 
 
 @app.cell(hide_code=True)
-def _(
-    PYMC_GREEN,
-    RANDOM_SEED,
-    disaster_counts,
-    go,
-    mo,
-    np,
-    pm,
-    t,
-    year_vals,
-):
+def _(PYMC_GREEN, RANDOM_SEED, disaster_counts, go, mo, np, pm, t, year_vals):
     with pm.Model():
         ell_alt = pm.InverseGamma("ell", alpha=2, beta=1)
         eta_alt = pm.HalfNormal("eta", sigma=2)
@@ -1598,29 +1602,27 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## Where we are, and what's next
+    mo.md(r"""
+    ## Where we are, and what's next
 
-        You have now fit both faces of GP inference on real data. In the
-        **marginal** (conjugate) case, a Gaussian likelihood let PyMC integrate
-        the latent function out analytically: `pm.gp.Marginal` sampled only a
-        handful of hyperparameters, predictions came in closed form, and MAP and
-        full MCMC nearly agreed. In the **latent** (non-conjugate) case, a
-        Poisson likelihood broke conjugacy, so `pm.gp.Latent` carried all 112
-        latent function values through the exp link and NUTS sampled them jointly
-        with the kernel hyperparameters — slower, but exact and fully
-        uncertainty-aware.
+    You have now fit both faces of GP inference on real data. In the
+    **marginal** (conjugate) case, a Gaussian likelihood let PyMC integrate
+    the latent function out analytically: `pm.gp.Marginal` sampled only a
+    handful of hyperparameters, predictions came in closed form, and MAP and
+    full MCMC nearly agreed. In the **latent** (non-conjugate) case, a
+    Poisson likelihood broke conjugacy, so `pm.gp.Latent` carried all 112
+    latent function values through the exp link and NUTS sampled them jointly
+    with the kernel hyperparameters — slower, but exact and fully
+    uncertainty-aware.
 
-        The dividing question is always the likelihood: **Gaussian noise ⇒ reach
-        for `Marginal`; anything else (counts, binary, heavy tails) ⇒ reach for
-        `Latent`.** Both share the same covariance-function vocabulary, which is
-        exactly what **Notebook 3** expands next — a tour of kernels (the Matérn
-        family, periodic, rational-quadratic, linear), how to *combine* them
-        additively and multiplicatively, GPs on multi-dimensional inputs, and
-        hierarchical GPs that share structure across groups.
-        """
-    )
+    The dividing question is always the likelihood: **Gaussian noise ⇒ reach
+    for `Marginal`; anything else (counts, binary, heavy tails) ⇒ reach for
+    `Latent`.** Both share the same covariance-function vocabulary, which is
+    exactly what **Notebook 3** expands next — a tour of kernels (the Matérn
+    family, periodic, rational-quadratic, linear), how to *combine* them
+    additively and multiplicatively, GPs on multi-dimensional inputs, and
+    hierarchical GPs that share structure across groups.
+    """)
     return
 
 

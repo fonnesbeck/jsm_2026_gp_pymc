@@ -13,41 +13,40 @@ def _():
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        # Kernels, Multi-Dimensional Inputs, and Hierarchy
+    mo.md(r"""
+    # Kernels, Multi-Dimensional Inputs, and Hierarchy
 
-        Notebooks 1 and 2 always used a single covariance function
-        (`Matern52`) on a single input dimension. This notebook broadens
-        both axes.
+    Notebooks 1 and 2 always used a single covariance function
+    (`Matern52`) on a single input dimension. This notebook broadens
+    both axes.
 
-        **Part A — the kernel zoo.** Different covariance functions encode
-        different assumptions about smoothness, periodicity, and even
-        linearity. We build intuition by drawing prior samples from seven
-        common kernels and comparing them side by side.
+    **Part A — the kernel zoo.** Different covariance functions encode
+    different assumptions about smoothness, periodicity, and even
+    linearity. We build intuition by drawing prior samples from seven
+    common kernels and comparing them side by side.
 
-        **Part B — kernel composition.** Kernels can be added (OR: either
-        structure explains the data) or multiplied (AND: both structures
-        apply simultaneously) to build richer covariance functions. We fit
-        an additive kernel — trend plus two tidal cycles — to a slice of
-        real NOAA tide-gauge data.
+    **Part B — kernel composition.** Kernels can be added (OR: either
+    structure explains the data) or multiplied (AND: both structures
+    apply simultaneously) to build richer covariance functions. We fit
+    an additive kernel — trend plus two tidal cycles — to a slice of
+    real NOAA tide-gauge data.
 
-        **Part C — multi-dimensional inputs.** GP inputs need not be 1D. We
-        fit a 2D spatial GP with **ARD** (automatic relevance determination)
-        lengthscales — one per input dimension — to county-level diabetes
-        prevalence data.
+    **Part C — multi-dimensional inputs.** GP inputs need not be 1D. We
+    fit a 2D spatial GP with **ARD** (automatic relevance determination)
+    lengthscales — one per input dimension — to county-level diabetes
+    prevalence data.
 
-        **Part D — hierarchical GPs.** Combining a GP with partial pooling:
-        a shared population-level trend plus small, non-centered per-group
-        deviations, fit to a panel of pitcher fastball spin rates.
-        """
-    )
+    **Part D — hierarchical GPs.** Combining a GP with partial pooling:
+    a shared population-level trend plus small, non-centered per-group
+    deviations, fit to a panel of pitcher fastball spin rates.
+    """)
     return
 
 
 @app.cell(hide_code=True)
-def _():
+def _(mo):
     from pathlib import Path
+    from inference_contract import eti, inference_health, posterior_subset
     from time import perf_counter
 
     import arviz as az
@@ -63,7 +62,12 @@ def _():
     PYMC_DARK_GREEN = "#40611F"
 
     RANDOM_SEED = 42
-    rng = np.random.default_rng(RANDOM_SEED)
+    is_script_mode = mo.app_meta().mode == "script"
+    execute_models = is_script_mode or bool(
+        mo.cli_args().get("execute-models", False)
+    )
+    results_dir = Path(__file__).parent.parent / "results"
+    results_dir.mkdir(exist_ok=True)
 
     data_dir = Path(__file__).parent.parent / "data"
 
@@ -74,45 +78,43 @@ def _():
     return (
         PYMC_BLUE,
         PYMC_DARK_GREEN,
-        PYMC_GREEN,
         PYMC_LIGHT_BLUE,
         RANDOM_SEED,
         az,
         data_dir,
+        execute_models,
         go,
         np,
         perf_counter,
         pl,
         pm,
-        rng,
+        results_dir,
         z,
     )
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## Part A: The kernel zoo
+    mo.md(r"""
+    ## Part A: The kernel zoo
 
-        Every covariance function below is evaluated on the same
-        1D grid, with the same amplitude $\eta$ and lengthscale $\ell$
-        where applicable, so that differences in the drawn functions come
-        purely from the *shape* of the kernel. Pick a kernel from the
-        dropdown and drag the sliders.
+    Every covariance function below is evaluated on the same
+    1D grid, with the same amplitude $\eta$ and lengthscale $\ell$
+    where applicable, so that differences in the drawn functions come
+    purely from the *shape* of the kernel. Pick a kernel from the
+    dropdown and drag the sliders.
 
-        - **ExpQuad** (squared exponential): infinitely smooth, the
-          "default" GP kernel.
-        - **Matern12 / Matern32 / Matern52**: progressively smoother members
-          of the Matérn family (Matern12 = Ornstein-Uhlenbeck, rough;
-          Matern52 close to ExpQuad-smooth).
-        - **Periodic**: strictly repeating structure with period $p$.
-        - **RatQuad** (rational quadratic): a scale mixture of ExpQuad
-          kernels with different lengthscales, controlled by $\alpha$.
-        - **Linear**: no lengthscale at all — draws are straight lines
-          through a pivot point $c$, not stationary.
-        """
-    )
+    - **ExpQuad** (squared exponential): infinitely smooth, the
+      "default" GP kernel.
+    - **Matern12 / Matern32 / Matern52**: progressively smoother members
+      of the Matérn family (Matern12 = Ornstein-Uhlenbeck, rough;
+      Matern52 close to ExpQuad-smooth).
+    - **Periodic**: strictly repeating structure with period $p$.
+    - **RatQuad** (rational quadratic): a scale mixture of ExpQuad
+      kernels with different lengthscales, controlled by $\alpha$.
+    - **Linear**: no lengthscale at all — draws are straight lines
+      through a pivot point $c$, not stationary.
+    """)
     return
 
 
@@ -187,11 +189,35 @@ def _(
 
 
 @app.cell
-def _(PYMC_DARK_GREEN, go, kernel_dropdown, np, rng, zoo_cov):
+def _(
+    PYMC_DARK_GREEN,
+    RANDOM_SEED,
+    go,
+    kernel_dropdown,
+    np,
+    zoo_alpha_slider,
+    zoo_c_slider,
+    zoo_cov,
+    zoo_eta_slider,
+    zoo_ls_slider,
+    zoo_period_slider,
+):
     zoo_grid = np.linspace(0, 10, 200).reshape(-1, 1)  # GP inputs are 2D: (n, 1)
     zoo_K = zoo_cov(zoo_grid).eval()
     zoo_K = zoo_K + 1e-8 * np.eye(len(zoo_grid))  # jitter for numerical stability
 
+    control_seed = sum(ord(char) for char in kernel_dropdown.value)
+    control_seed += round(
+        100
+        * (
+            zoo_ls_slider.value
+            + zoo_eta_slider.value
+            + zoo_period_slider.value
+            + zoo_alpha_slider.value
+            + zoo_c_slider.value
+        )
+    )
+    rng = np.random.default_rng(RANDOM_SEED + control_seed)
     zoo_n_draws = 5
     zoo_draws = rng.multivariate_normal(
         np.zeros(len(zoo_grid)), zoo_K, size=zoo_n_draws
@@ -222,43 +248,39 @@ def _(PYMC_DARK_GREEN, go, kernel_dropdown, np, rng, zoo_cov):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        **What to notice as you switch kernels:** Matern12 draws are jagged
-        and nowhere differentiable; Matern52 and ExpQuad are visibly
-        smoother, with ExpQuad the smoothest of all (infinitely
-        differentiable). Periodic draws repeat exactly every $p$ units no
-        matter how far you look — the only kernel here with that property.
-        RatQuad with small $\alpha$ behaves like a mixture of many
-        lengthscales at once (locally wigglier with occasional smooth
-        stretches); as $\alpha \to \infty$ it converges to ExpQuad. Linear
-        is the odd one out: it is **not stationary** (covariance depends on
-        the absolute location $x$, not just $x - x'$), so draws are simply
-        straight lines pivoting near $c$ — no lengthscale controls their
-        shape at all.
-        """
-    )
+    mo.md(r"""
+    **What to notice as you switch kernels:** Matern12 draws are jagged
+    and nowhere differentiable; Matern52 and ExpQuad are visibly
+    smoother, with ExpQuad the smoothest of all (infinitely
+    differentiable). Periodic draws repeat exactly every $p$ units no
+    matter how far you look — the only kernel here with that property.
+    RatQuad with small $\alpha$ behaves like a mixture of many
+    lengthscales at once (locally wigglier with occasional smooth
+    stretches); as $\alpha \to \infty$ it converges to ExpQuad. Linear
+    is the odd one out: it is **not stationary** (covariance depends on
+    the absolute location $x$, not just $x - x'$), so draws are simply
+    straight lines pivoting near $c$ — no lengthscale controls their
+    shape at all.
+    """)
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## Part B: Kernel composition — NOAA tide gauge
+    mo.md(r"""
+    ## Part B: Kernel composition — NOAA tide gauge
 
-        ### Background
+    ### Background
 
-        NOAA CO-OPS station 9414290 (San Francisco, CA) is a long-record
-        **mixed semidiurnal** tide station: the water level shows two
-        superimposed periodic components — a roughly 12.42-hour
-        **semidiurnal** (twice-daily) tide driven mainly by the moon, and a
-        roughly 23.93-hour **diurnal** (once-daily) tide — riding on top of
-        a slower background trend. Values below are hourly water levels in
-        meters relative to the MLLW (mean lower low water) datum for a
-        slice of 2019.
-        """
-    )
+    NOAA CO-OPS station 9414290 (San Francisco, CA) is a long-record
+    **mixed semidiurnal** tide station: the water level shows two
+    superimposed periodic components — a roughly 12.42-hour
+    **semidiurnal** (twice-daily) tide driven mainly by the moon, and a
+    roughly 23.93-hour **diurnal** (once-daily) tide — riding on top of
+    a slower background trend. Values below are hourly water levels in
+    meters relative to the MLLW (mean lower low water) datum for a
+    slice of 2019.
+    """)
     return
 
 
@@ -271,7 +293,7 @@ def _(data_dir, pl):
     )
     tides_slice = tides.head(N_EXACT)
     tides_slice.head()
-    return N_EXACT, tides_slice
+    return (tides_slice,)
 
 
 @app.cell
@@ -319,43 +341,41 @@ def _(PYMC_BLUE, go, tide_hours, tide_level):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Additive vs. multiplicative kernel structure
+    mo.md(r"""
+    ### Additive vs. multiplicative kernel structure
 
-        Two ways to combine covariance functions:
+    Two ways to combine covariance functions:
 
-        - **Additive (OR)**: $k(x,x') = k_1(x,x') + k_2(x,x')$. A draw from
-          the sum is a draw from $k_1$ *plus* a (statistically independent)
-          draw from $k_2$ — useful when the data is a **superposition** of
-          distinct structures, e.g. a slow trend plus fast periodic
-          wiggles. This is the right structure for tides: a slowly-drifting
-          mean level, plus a semidiurnal cycle, plus a diurnal cycle, added
-          together.
-        - **Multiplicative (AND)**: $k(x,x') = k_1(x,x') \cdot k_2(x,x')$.
-          This is how you build kernels whose behavior along one dimension
-          is *modulated* by another (e.g. a periodic kernel times a slowly
-          decaying ExpQuad gives a periodic pattern that fades in and out —
-          `pm.gp.cov.Periodic` combined this way is one route to a
-          quasi-periodic kernel), or how an ARD kernel over multiple input
-          dimensions is built (Part C).
+    - **Additive (OR)**: $k(x,x') = k_1(x,x') + k_2(x,x')$. A draw from
+      the sum is a draw from $k_1$ *plus* a (statistically independent)
+      draw from $k_2$ — useful when the data is a **superposition** of
+      distinct structures, e.g. a slow trend plus fast periodic
+      wiggles. This is the right structure for tides: a slowly-drifting
+      mean level, plus a semidiurnal cycle, plus a diurnal cycle, added
+      together.
+    - **Multiplicative (AND)**: $k(x,x') = k_1(x,x') \cdot k_2(x,x')$.
+      This is how you build kernels whose behavior along one dimension
+      is *modulated* by another (e.g. a periodic kernel times a slowly
+      decaying ExpQuad gives a periodic pattern that fades in and out —
+      `pm.gp.cov.Periodic` combined this way is one route to a
+      quasi-periodic kernel), or how an ARD kernel over multiple input
+      dimensions is built (Part C).
 
-        Below we compose an **additive** kernel: a long-lengthscale
-        `Matern52` trend plus two `Periodic` components, one for each known
-        physical period. Each `Periodic` component's period and
-        within-cycle lengthscale are **fixed** at physically-motivated
-        constants (12.42h semidiurnal / 23.93h diurnal periods — these are
-        astronomical constants, not free parameters — and a moderate
-        within-cycle lengthscale that gives each cycle a smooth, roughly
-        sinusoidal shape rather than a sharp spike). Freeing both the period
-        *and* the within-cycle lengthscale of two near-commensurate cycles
-        (23.93h is almost exactly twice 12.42h) creates a hard-to-sample,
-        highly correlated posterior; fixing the shape parameters and
-        leaving only the trend lengthscale and each component's amplitude
-        free keeps the search well-behaved while still letting the data
-        determine how strong each tidal component is.
-        """
-    )
+    Below we compose an **additive** kernel: a long-lengthscale
+    `Matern52` trend plus two `Periodic` components, one for each known
+    physical period. Each `Periodic` component's period and
+    within-cycle lengthscale are **fixed** at physically-motivated
+    constants (12.42h semidiurnal / 23.93h diurnal periods — these are
+    astronomical constants, not free parameters — and a moderate
+    within-cycle lengthscale that gives each cycle a smooth, roughly
+    sinusoidal shape rather than a sharp spike). Freeing both the period
+    *and* the within-cycle lengthscale of two near-commensurate cycles
+    (23.93h is almost exactly twice 12.42h) creates a hard-to-sample,
+    highly correlated posterior; fixing the shape parameters and
+    leaving only the trend lengthscale and each component's amplitude
+    free keeps the search well-behaved while still letting the data
+    determine how strong each tidal component is.
+    """)
     return
 
 
@@ -386,8 +406,7 @@ def _(pm, tide_hours_std):
         sigma_tide = pm.HalfNormal("sigma_tide", sigma=0.5)
 
         gp_tide = pm.gp.Marginal(cov_func=cov_tide)
-
-    return cov_tide, gp_tide, tide_model
+    return gp_tide, sigma_tide, tide_model
 
 
 @app.cell
@@ -399,7 +418,9 @@ def _(X_tide, gp_tide, sigma_tide, tide_model, y_tide):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(r"""### Prior predictive check""")
+    mo.md(r"""
+    ### Prior predictive check
+    """)
     return
 
 
@@ -464,24 +485,40 @@ def _(mo, tide_prior_draws, y_tide):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Sampling
+    mo.md(r"""
+    ### Sampling
 
-        5 free hyperparameters (trend $\ell,\eta$; two periodic amplitudes
-        $\eta$; noise $\sigma$ — periods and within-cycle shape are fixed,
-        as discussed above) over 200 points.
-        """
-    )
+    5 free hyperparameters (trend $\ell,\eta$; two periodic amplitudes
+    $\eta$; noise $\sigma$ — periods and within-cycle shape are fixed,
+    as discussed above) over 200 points.
+    """)
     return
 
 
 @app.cell
-def _(RANDOM_SEED, perf_counter, pm, tide_model):
+def _(mo):
+    tide_fit_button = mo.ui.run_button(label="Fit exact tide GP")
+    tide_fit_button
+    return (tide_fit_button,)
+
+
+@app.cell
+def _(
+    RANDOM_SEED,
+    execute_models,
+    mo,
+    perf_counter,
+    pm,
+    results_dir,
+    tide_fit_button,
+    tide_model,
+):
+    mo.stop(not (tide_fit_button.value or execute_models))
     with tide_model:
         tide_start = perf_counter()
-        tide_idata = pm.sample(random_seed=RANDOM_SEED)
+        tide_idata = pm.sample(chains=4, random_seed=RANDOM_SEED)
         tide_sample_seconds = perf_counter() - tide_start
+    tide_idata.to_netcdf(results_dir / "03_tide_exact_gp.nc")
     print(f"NOAA additive-GP sampling wall-time: {tide_sample_seconds:.1f}s")
     return tide_idata, tide_sample_seconds
 
@@ -533,11 +570,11 @@ def _(
 def _(X_tide, gp_tide, tide_model):
     with tide_model:
         f_tide_pred = gp_tide.conditional("f_tide_pred", X_tide)
-    return (f_tide_pred,)
+    return
 
 
 @app.cell
-def _(RANDOM_SEED, f_tide_pred, pm, tide_idata, tide_model):
+def _(RANDOM_SEED, pm, tide_idata, tide_model):
     with tide_model:
         tide_ppc = pm.sample_posterior_predictive(
             tide_idata, var_names=["f_tide_pred"], random_seed=RANDOM_SEED
@@ -609,31 +646,29 @@ def _(
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        The additive kernel recovers the characteristic mixed-tide shape —
-        alternating higher and lower high tides each day (the diurnal
-        inequality) riding on a slowly drifting mean level — without ever
-        being told the functional form of a tide curve, just its additive
-        covariance structure.
+    mo.md(r"""
+    The additive kernel recovers the characteristic mixed-tide shape —
+    alternating higher and lower high tides each day (the diurnal
+    inequality) riding on a slowly drifting mean level — without ever
+    being told the functional form of a tide curve, just its additive
+    covariance structure.
 
-        Fitting the **full year** (8,760 points) exactly this way is not
-        practical — exact `gp.Marginal` inference costs $O(n^3)$ per
-        gradient evaluation. Hour 4 introduces `pm.gp.HSGP`, a basis-function
-        approximation that scales to the whole series (and beyond) at a
-        fraction of the cost; we defer that fit there.
+    Fitting the **full year** (8,760 points) exactly this way is not
+    practical — exact `gp.Marginal` inference costs $O(n^3)$ per
+    gradient evaluation. Hour 4 introduces `pm.gp.HSGP`, a basis-function
+    approximation that scales to the whole series (and beyond) at a
+    fraction of the cost; we defer that fit there.
 
-        ### Exercise: compose a kernel for a described pattern
+    ### Exercise: compose a kernel for a described pattern
 
-        Suppose you have hourly foot-traffic counts at a retail store, and
-        you're told: "traffic has a strong repeating **daily** pattern
-        (open/close hours), a weaker repeating **weekly** pattern (weekends
-        differ from weekdays), and a slow **seasonal** drift on top." Using
-        only `Matern52` and `Periodic`, sketch the additive kernel you
-        would use (as a sum of terms with a period argument, where
-        relevant) before expanding the solution.
-        """
-    )
+    Suppose you have hourly foot-traffic counts at a retail store, and
+    you're told: "traffic has a strong repeating **daily** pattern
+    (open/close hours), a weaker repeating **weekly** pattern (weekends
+    differ from weekdays), and a slow **seasonal** drift on top." Using
+    only `Matern52` and `Periodic`, sketch the additive kernel you
+    would use (as a sum of terms with a period argument, where
+    relevant) before expanding the solution.
+    """)
     return
 
 
@@ -667,23 +702,21 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## Part C: Multi-dimensional inputs — CDC PLACES county diabetes
+    mo.md(r"""
+    ## Part C: Multi-dimensional inputs — CDC PLACES county diabetes
 
-        ### Background
+    ### Background
 
-        CDC PLACES ("Local Data for Better Health") publishes **model-based
-        small-area estimates** of chronic-disease prevalence for every U.S.
-        county, produced by combining BRFSS survey data with census
-        covariates via multilevel regression and poststratification. These
-        are *not* raw county censuses — they carry their own modeling
-        uncertainty — but they are a standard source for county-level
-        health geography. Below: diagnosed-diabetes prevalence (%) among
-        adults for North Carolina's 100 counties, located by county-centroid
-        longitude/latitude.
-        """
-    )
+    CDC PLACES ("Local Data for Better Health") publishes **model-based
+    small-area estimates** of chronic-disease prevalence for every U.S.
+    county, produced by combining BRFSS survey data with census
+    covariates via multilevel regression and poststratification. These
+    are *not* raw county censuses — they carry their own modeling
+    uncertainty — but they are a standard source for county-level
+    health geography. Below: diagnosed-diabetes prevalence (%) among
+    adults for North Carolina's 100 counties, located by county-centroid
+    longitude/latitude.
+    """)
     return
 
 
@@ -695,7 +728,7 @@ def _(data_dir, pl):
 
 
 @app.cell
-def _(places, z):
+def _(np, places, z):
     places_lon = places["lon"].to_numpy()
     places_lat = places["lat"].to_numpy()
     places_diabetes = places["diabetes_pct"].to_numpy()
@@ -755,24 +788,22 @@ def _(PYMC_BLUE, go, places, places_diabetes, places_lat, places_lon):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### ARD: one lengthscale per input dimension
+    mo.md(r"""
+    ### ARD: one lengthscale per input dimension
 
-        So far every kernel has had a single scalar lengthscale $\ell$. When
-        the input is multi-dimensional, nothing stops us from giving each
-        dimension its **own** lengthscale — a vector
-        $\boldsymbol{\ell} = (\ell_{\text{lon}}, \ell_{\text{lat}})$ instead
-        of a scalar. This is called **automatic relevance determination**
-        (ARD): the posterior for each $\ell_d$ tells you how quickly
-        correlation decays *in that direction alone*. A short lengthscale
-        in one direction and a long one in the other means the underlying
-        surface varies faster east-west than north-south (or vice versa) —
-        exactly the kind of anisotropy you'd expect from a health outcome
-        correlated with, say, a north-south urban/rural gradient. PyMC's
-        stationary kernels accept a vector for `ls` directly.
-        """
-    )
+    So far every kernel has had a single scalar lengthscale $\ell$. When
+    the input is multi-dimensional, nothing stops us from giving each
+    dimension its **own** lengthscale — a vector
+    $\boldsymbol{\ell} = (\ell_{\text{lon}}, \ell_{\text{lat}})$ instead
+    of a scalar. This is called **automatic relevance determination**
+    (ARD): the posterior for each $\ell_d$ tells you how quickly
+    correlation decays *in that direction alone*. A short lengthscale
+    in one direction and a long one in the other means the underlying
+    surface varies faster east-west than north-south (or vice versa) —
+    exactly the kind of anisotropy you'd expect from a health outcome
+    correlated with, say, a north-south urban/rural gradient. PyMC's
+    stationary kernels accept a vector for `ls` directly.
+    """)
     return
 
 
@@ -786,13 +817,14 @@ def _(X_places, pm, y_places):
 
         gp_places = pm.gp.Marginal(cov_func=cov_places)
         gp_places.marginal_likelihood("y", X=X_places, y=y_places, sigma=sigma_places)
-
     return gp_places, places_model
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(r"""### Prior predictive check""")
+    mo.md(r"""
+    ### Prior predictive check
+    """)
     return
 
 
@@ -866,25 +898,41 @@ def _(mo, places_prior_draws, y_places):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Sampling
+    mo.md(r"""
+    ### Sampling
 
-        100 counties is tiny for a GP — the training covariance is only
-        $100 \times 100$, so its Cholesky decomposition is essentially
-        instantaneous, and sampling is fast even with the extra ARD
-        lengthscale dimension.
-        """
-    )
+    100 counties is tiny for a GP — the training covariance is only
+    $100 \times 100$, so its Cholesky decomposition is essentially
+    instantaneous, and sampling is fast even with the extra ARD
+    lengthscale dimension.
+    """)
     return
 
 
 @app.cell
-def _(RANDOM_SEED, perf_counter, places_model, pm):
+def _(mo):
+    places_fit_button = mo.ui.run_button(label="Fit PLACES spatial GP")
+    places_fit_button
+    return (places_fit_button,)
+
+
+@app.cell
+def _(
+    RANDOM_SEED,
+    execute_models,
+    mo,
+    perf_counter,
+    places_fit_button,
+    places_model,
+    pm,
+    results_dir,
+):
+    mo.stop(not (places_fit_button.value or execute_models))
     with places_model:
         places_start = perf_counter()
-        places_idata = pm.sample(random_seed=RANDOM_SEED)
+        places_idata = pm.sample(chains=4, random_seed=RANDOM_SEED)
         places_sample_seconds = perf_counter() - places_start
+    places_idata.to_netcdf(results_dir / "03_places_spatial_gp.nc")
     print(f"PLACES ARD-GP sampling wall-time: {places_sample_seconds:.1f}s")
     return places_idata, places_sample_seconds
 
@@ -940,21 +988,19 @@ def _(
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Predicting on a spatial grid
+    mo.md(r"""
+    ### Predicting on a spatial grid
 
-        We evaluate the fitted GP's **full posterior-predictive**
-        conditional on a regular longitude/latitude grid covering the
-        county centroids — the same `.conditional` +
-        `pm.sample_posterior_predictive` pattern used for `f_tide_pred` in
-        Part B and for `f_pred` in Notebook 2 — rather than a single
-        plug-in point estimate, so the heatmap below reflects the actual
-        posterior mean over hyperparameters. The grid is kept modest
-        (20x20 = 400 points) since `.conditional` draws a full-covariance
-        sample per posterior draw and cost grows quickly with grid size.
-        """
-    )
+    We evaluate the fitted GP's **full posterior-predictive**
+    conditional on a regular longitude/latitude grid covering the
+    county centroids — the same `.conditional` +
+    `pm.sample_posterior_predictive` pattern used for `f_tide_pred` in
+    Part B and for `f_pred` in Notebook 2 — rather than a single
+    plug-in point estimate, so the heatmap below reflects the actual
+    posterior mean over hyperparameters. The grid is kept modest
+    (20x20 = 400 points) since `.conditional` draws a full-covariance
+    sample per posterior draw and cost grows quickly with grid size.
+    """)
     return
 
 
@@ -984,11 +1030,11 @@ def _(
 
     with places_model:
         f_grid = gp_places.conditional("f_grid", X_grid)
-    return LAT_MESH, LON_MESH, f_grid, grid_n, lat_grid, lon_grid
+    return LAT_MESH, LON_MESH, grid_n
 
 
 @app.cell
-def _(RANDOM_SEED, f_grid, pm, places_idata, places_model):
+def _(RANDOM_SEED, places_idata, places_model, pm):
     with places_model:
         places_grid_ppc = pm.sample_posterior_predictive(
             places_idata, var_names=["f_grid"], random_seed=RANDOM_SEED
@@ -998,9 +1044,9 @@ def _(RANDOM_SEED, f_grid, pm, places_idata, places_model):
 
 @app.cell
 def _(
-    PYMC_BLUE,
     LAT_MESH,
     LON_MESH,
+    PYMC_BLUE,
     go,
     grid_n,
     places,
@@ -1066,26 +1112,24 @@ def _(
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        The predicted surface smoothly interpolates between county
-        centroids, higher in some regions and lower in others, reflecting
-        the spatial correlation the ARD kernel learned along longitude and
-        latitude separately. Treat this surface with the same caution as
-        the underlying PLACES estimates themselves: it is a smoothed
-        *model* of model-based estimates, useful for visualizing broad
-        spatial pattern, not a substitute for a county-level measurement.
+    mo.md(r"""
+    The predicted surface smoothly interpolates between county
+    centroids, higher in some regions and lower in others, reflecting
+    the spatial correlation the ARD kernel learned along longitude and
+    latitude separately. Treat this surface with the same caution as
+    the underlying PLACES estimates themselves: it is a smoothed
+    *model* of model-based estimates, useful for visualizing broad
+    spatial pattern, not a substitute for a county-level measurement.
 
-        ### Exercise: try an isotropic (non-ARD) kernel
+    ### Exercise: try an isotropic (non-ARD) kernel
 
-        Refit with a single scalar lengthscale (`pm.gp.cov.Matern52(2,
-        ls=ell)` with `ell` a scalar, rather than `shape=2`) instead of the
-        ARD vector. Compare the fitted surface — does forcing lon and lat to
-        share one lengthscale visibly change the shape of the predicted
-        surface, or do the two ARD lengthscales turn out to be similar
-        enough that it barely matters? Expand for a discussion.
-        """
-    )
+    Refit with a single scalar lengthscale (`pm.gp.cov.Matern52(2,
+    ls=ell)` with `ell` a scalar, rather than `shape=2`) instead of the
+    ARD vector. Compare the fitted surface — does forcing lon and lat to
+    share one lengthscale visibly change the shape of the predicted
+    surface, or do the two ARD lengthscales turn out to be similar
+    enough that it barely matters? Expand for a discussion.
+    """)
     return
 
 
@@ -1120,20 +1164,18 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## Part D: Hierarchical GP — fastball spin rates
+    mo.md(r"""
+    ## Part D: Hierarchical GP — fastball spin rates
 
-        ### Background
+    ### Background
 
-        Statcast fastball spin rate (rpm) for 3 MLB pitchers, 10 games each
-        over the 2021 season. Spin rate drifts gradually over a season for
-        physiological and mechanical reasons, but each pitcher has their
-        own characteristic average level. We want to borrow strength across
-        pitchers for the *shape* of the within-season drift, while still
-        letting each pitcher have their own baseline.
-        """
-    )
+    Statcast fastball spin rate (rpm) for 3 MLB pitchers, 10 games each
+    over the 2021 season. Spin rate drifts gradually over a season for
+    physiological and mechanical reasons, but each pitcher has their
+    own characteristic average level. We want to borrow strength across
+    pitchers for the *shape* of the within-season drift, while still
+    letting each pitcher have their own baseline.
+    """)
     return
 
 
@@ -1167,7 +1209,6 @@ def _(np, spin, z):
         day_std,
         day_z,
         pitcher_idx_num,
-        pitcher_map,
         pitchers,
         spin_mean,
         spin_std,
@@ -1204,27 +1245,25 @@ def _(day_of_season, go, np, pitcher_idx_num, pitchers, spin_vals):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Partial pooling
+    mo.md(r"""
+    ### Partial pooling
 
-        Two extremes: fit each pitcher's trend **completely separately**
-        (no pooling — noisy with only 10 games each) or fit **one shared**
-        trend and ignore that pitchers differ (complete pooling — ignores
-        real between-pitcher variation). A hierarchical model does neither:
-        it puts a single shared population-level GP trend $f_{\text{pop}}$
-        over day-of-season, and gives every pitcher a **small, partially
-        pooled deviation** from it,
-        $\text{dev}_i \sim \mathcal{N}(0, \sigma_{\text{dev}}^2)$, estimated
-        jointly with everything else. $\sigma_{\text{dev}}$ itself is
-        learned from the data: if pitchers turn out to be very similar, it
-        shrinks toward zero and pools hard; if they are genuinely
-        different, it grows and pools less. As in earlier hierarchical
-        models, we use the **non-centered** parameterization
-        (`offset ~ Normal(0, 1)`, `dev = sigma_dev * offset`) to avoid the
-        funnel geometry that a centered hierarchical GP is prone to.
-        """
-    )
+    Two extremes: fit each pitcher's trend **completely separately**
+    (no pooling — noisy with only 10 games each) or fit **one shared**
+    trend and ignore that pitchers differ (complete pooling — ignores
+    real between-pitcher variation). A hierarchical model does neither:
+    it puts a single shared population-level GP trend $f_{\text{pop}}$
+    over day-of-season, and gives every pitcher a **small, partially
+    pooled deviation** from it,
+    $\text{dev}_i \sim \mathcal{N}(0, \sigma_{\text{dev}}^2)$, estimated
+    jointly with everything else. $\sigma_{\text{dev}}$ itself is
+    learned from the data: if pitchers turn out to be very similar, it
+    shrinks toward zero and pools hard; if they are genuinely
+    different, it grows and pools less. As in earlier hierarchical
+    models, we use the **non-centered** parameterization
+    (`offset ~ Normal(0, 1)`, `dev = sigma_dev * offset`) to avoid the
+    funnel geometry that a centered hierarchical GP is prone to.
+    """)
     return
 
 
@@ -1248,13 +1287,14 @@ def _(day_z, np, pitcher_idx_num, pitchers, pm, spin_z):
         mu = f_pop + dev[pitcher_data]
         sigma_obs = pm.HalfNormal("sigma_obs", sigma=0.5)
         pm.Normal("spin_obs", mu=mu, sigma=sigma_obs, observed=spin_z, dims="obs")
-
     return gp_pop, spin_model
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(r"""### Prior predictive check""")
+    mo.md(r"""
+    ### Prior predictive check
+    """)
     return
 
 
@@ -1324,35 +1364,51 @@ def _(mo, spin_prior_draws, spin_z):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Sampling
+    mo.md(r"""
+    ### Sampling
 
-        Only 30 observations, but the non-centered hierarchy over a latent
-        GP has a mildly delicate funnel geometry, so we raise
-        `target_accept` well above the 0.8 default (0.99, found by
-        checking for divergences) rather than the more typical 0.9, and use
-        more draws than the `1000` default to comfortably clear
-        `ess_bulk > 400` on the **full posterior** — every hyperparameter,
-        the per-pitcher deviations, and the latent GP itself
-        (`f_pop`/`f_pop_rotated_`, its highest-dimensional and most
-        funnel-prone component) — not just a convenient subset.
-        """
-    )
+    Only 30 observations, but the non-centered hierarchy over a latent
+    GP has a mildly delicate funnel geometry, so we raise
+    `target_accept` well above the 0.8 default (0.99, found by
+    checking for divergences) rather than the more typical 0.9, and use
+    more draws than the `1000` default to comfortably clear
+    `ess_bulk > 400` on the **full posterior** — every hyperparameter,
+    the per-pitcher deviations, and the latent GP itself
+    (`f_pop`/`f_pop_rotated_`, its highest-dimensional and most
+    funnel-prone component) — not just a convenient subset.
+    """)
     return
 
 
 @app.cell
-def _(RANDOM_SEED, perf_counter, pm, spin_model):
+def _(mo):
+    spin_fit_button = mo.ui.run_button(label="Fit hierarchical spin GP")
+    spin_fit_button
+    return (spin_fit_button,)
+
+
+@app.cell
+def _(
+    RANDOM_SEED,
+    execute_models,
+    mo,
+    perf_counter,
+    pm,
+    results_dir,
+    spin_fit_button,
+    spin_model,
+):
+    mo.stop(not (spin_fit_button.value or execute_models))
     with spin_model:
         spin_start = perf_counter()
         spin_idata = pm.sample(
             draws=1500,
             tune=1500,
+            chains=4,
             random_seed=RANDOM_SEED,
-            target_accept=0.99,
         )
         spin_sample_seconds = perf_counter() - spin_start
+    spin_idata.to_netcdf(results_dir / "03_spin_hierarchical_gp.nc")
     print(f"Hierarchical spin-rate GP sampling wall-time: {spin_sample_seconds:.1f}s")
     return spin_idata, spin_sample_seconds
 
@@ -1418,11 +1474,11 @@ def _(day_mean, day_of_season, day_std, gp_pop, np, spin_model):
     spin_day_grid_z = ((spin_day_grid - day_mean) / day_std).reshape(-1, 1)
     with spin_model:
         f_pop_grid = gp_pop.conditional("f_pop_grid", spin_day_grid_z)
-    return f_pop_grid, spin_day_grid
+    return (spin_day_grid,)
 
 
 @app.cell
-def _(RANDOM_SEED, f_pop_grid, pm, spin_idata, spin_model):
+def _(RANDOM_SEED, pm, spin_idata, spin_model):
     with spin_model:
         spin_grid_ppc = pm.sample_posterior_predictive(
             spin_idata, var_names=["f_pop_grid"], random_seed=RANDOM_SEED
@@ -1505,25 +1561,23 @@ def _(
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        Each pitcher's posterior trajectory is the **same shared shape**
-        ($f_{\text{pop}}$, the population trend), shifted up or down by
-        that pitcher's own partially-pooled offset — visible as three
-        vertically-separated curves that all rise and fall together. The
-        model borrows the within-season *shape* across all 30
-        observations, while still giving each pitcher their own level.
+    mo.md(r"""
+    Each pitcher's posterior trajectory is the **same shared shape**
+    ($f_{\text{pop}}$, the population trend), shifted up or down by
+    that pitcher's own partially-pooled offset — visible as three
+    vertically-separated curves that all rise and fall together. The
+    model borrows the within-season *shape* across all 30
+    observations, while still giving each pitcher their own level.
 
-        ### Exercise: inspect pooling by changing the `sigma_dev` prior
+    ### Exercise: inspect pooling by changing the `sigma_dev` prior
 
-        The `sigma_dev ~ HalfNormal(0.5)` prior controls how much pitchers
-        are *allowed* to differ from the shared trend. Refit with a much
-        tighter prior (e.g. `HalfNormal(0.05)`, forcing near-complete
-        pooling) and a much looser one (e.g. `HalfNormal(5)`, allowing
-        near-independent fits). How do the three trajectories above change?
-        Expand for a discussion.
-        """
-    )
+    The `sigma_dev ~ HalfNormal(0.5)` prior controls how much pitchers
+    are *allowed* to differ from the shared trend. Refit with a much
+    tighter prior (e.g. `HalfNormal(0.05)`, forcing near-complete
+    pooling) and a much looser one (e.g. `HalfNormal(5)`, allowing
+    near-independent fits). How do the three trajectories above change?
+    Expand for a discussion.
+    """)
     return
 
 
