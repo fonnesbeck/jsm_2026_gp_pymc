@@ -94,21 +94,65 @@ def test_00_environment_check_gp_contract():
     assert model.compile_logp()(model.initial_point()).shape == ()
 
 
+def assert_foundations_artifact_contract(idata, free_rv_names: set[str]) -> None:
+    import arviz as az
+
+    posterior = idata["posterior"]
+    assert free_rv_names <= set(posterior.data_vars)
+    assert {"chain", "draw"} <= set(posterior.dims)
+    assert posterior.sizes["chain"] == 4, "expected four chains"
+
+    divergences = idata["sample_stats"]["diverging"].sum().item()
+    assert divergences == 0
+
+    diagnostics = az.summary(
+        idata,
+        var_names=sorted(free_rv_names),
+        kind="diagnostics",
+        round_to="none",
+    )
+    assert diagnostics["r_hat"].notna().all()
+    assert (diagnostics["r_hat"] <= 1.01).all()
+    assert (diagnostics["ess_bulk"] >= 400).all()
+    assert (diagnostics["ess_tail"] >= 400).all()
+
+    assert idata["observed_data"]["conc_obs"].dims == ("observation",)
+    assert idata["posterior_predictive"]["conc_obs"].dims == (
+        "chain",
+        "draw",
+        "observation",
+    )
+
+
 def test_01_foundations():
     run_notebook(NB / "01_foundations.py", timeout_s=900)
 
     import arviz as az
 
-    for filename, expected_variables in (
+    for filename, free_rv_names in (
         ("01_warmup.nc", {"mu", "sigma"}),
         ("01_piecewise.nc", {"peak", "rise", "decay", "tau", "sigma"}),
     ):
         idata = az.from_netcdf(NB.parent / "results" / filename)
-        posterior = idata["posterior"]
-        assert expected_variables <= set(posterior.data_vars)
-        assert {"chain", "draw"} <= set(posterior.dims)
-        assert idata["observed_data"]["conc_obs"].dims == ("observation",)
+        assert_foundations_artifact_contract(idata, free_rv_names)
 
+
+
+def test_foundations_artifact_contract_rejects_nonfour_chain_datatree():
+    import arviz as az
+    import numpy as np
+
+    idata = az.from_dict(
+        {
+            "posterior": {"mu": np.zeros((3, 500))},
+            "sample_stats": {"diverging": np.zeros((3, 500), dtype=bool)},
+            "posterior_predictive": {"conc_obs": np.zeros((3, 500, 11))},
+            "observed_data": {"conc_obs": np.zeros(11)},
+        }
+    )
+
+    with pytest.raises(AssertionError, match="chain"):
+        assert_foundations_artifact_contract(idata, {"mu"})
 
 def test_02_marginal_latent():
     run_notebook(
