@@ -89,9 +89,8 @@ def _(mo):
         RANDOM_SEED,
         az,
         data_dir,
-        execute_models,
-        eti,
         eti_bounds,
+        execute_models,
         go,
         inference_health,
         np,
@@ -210,7 +209,8 @@ def _(X, np, pm, y):
         return model, gp
 
     naive_model, gp_naive = build_naive_marginal_gp_model(X, y)
-    return build_naive_marginal_gp_model, gp_naive, naive_model
+    return gp_naive, naive_model
+
 
 @app.cell
 def _(RANDOM_SEED, naive_model, pm):
@@ -222,8 +222,7 @@ def _(RANDOM_SEED, naive_model, pm):
         f"{float(naive_prior_y.quantile(0.055)):.2f} to "
         f"{float(naive_prior_y.quantile(0.945)):.2f} on the standardized scale."
     )
-    return naive_prior, naive_prior_y
-
+    return
 
 
 @app.cell
@@ -377,12 +376,12 @@ def _(np, pm):
         return model, gp
 
     return (build_marginal_gp_model,)
+
+
 @app.cell
 def _(X_log, build_marginal_gp_model, y):
     gp_model, _structured_gp = build_marginal_gp_model(X_log, y)
     return (gp_model,)
-
-
 
 
 @app.cell(hide_code=True)
@@ -550,15 +549,7 @@ def _(mo):
 
 
 @app.cell
-def _(
-    RANDOM_SEED,
-    execute_models,
-    gp_model,
-    mo,
-    pm,
-    results_dir,
-    structured_fit_button,
-):
+def _(execute_models, gp_model, mo, pm, results_dir, structured_fit_button):
     mo.stop(not (structured_fit_button.value or execute_models))
     gp_model.compile_logp()(gp_model.initial_point())
     with gp_model:
@@ -573,6 +564,8 @@ def _(
         )
     idata.to_netcdf(results_dir / "02_marginal_gp.nc")
     return (idata,)
+
+
 @app.cell
 def _(RANDOM_SEED, gp_model, idata, pm, posterior_subset, results_dir):
     with gp_model:
@@ -584,9 +577,7 @@ def _(RANDOM_SEED, gp_model, idata, pm, posterior_subset, results_dir):
     idata_with_ppc = idata.copy()
     idata_with_ppc["posterior_predictive"] = observed_ppc["posterior_predictive"]
     idata_with_ppc.to_netcdf(results_dir / "02_marginal_gp.nc")
-    return idata_with_ppc, observed_ppc
-
-
+    return (idata_with_ppc,)
 
 
 @app.cell
@@ -606,7 +597,16 @@ def _(gp_model, idata, inference_health):
     max_rhat = float(summary["r_hat"].astype(float).max())
     print(f"Divergences: {n_div} / {n_draws_total}; health passed: {health_passed}")
     summary
-    return health_passed, max_rhat, min_ess_bulk, min_ess_tail, n_div, n_draws_total, summary
+    return (
+        health_passed,
+        max_rhat,
+        min_ess_bulk,
+        min_ess_tail,
+        n_div,
+        n_draws_total,
+    )
+
+
 @app.cell
 def _(az, gp_model, idata):
     posterior_summary = az.summary(
@@ -615,12 +615,10 @@ def _(az, gp_model, idata):
     return (posterior_summary,)
 
 
-
-
 @app.cell(hide_code=True)
 def _(
-    map_estimate,
     health_passed,
+    map_estimate,
     max_rhat,
     min_ess_bulk,
     min_ess_tail,
@@ -646,13 +644,13 @@ def _(
     )
     return
 
+
 @app.cell
 def _(az, gp_model, idata):
     _structured_free_rv_names = [rv.name for rv in gp_model.free_RVs]
     az.plot_trace_dist(idata, var_names=_structured_free_rv_names, compact=True)
     az.plot_rank(idata, var_names=_structured_free_rv_names)
     return
-
 
 
 @app.cell
@@ -813,12 +811,12 @@ def _(
     )
     pred_fig
     return
+
+
 @app.cell
 def _(az, idata_with_ppc):
     az.plot_ppc_dist(idata_with_ppc, var_names=["y"], kind="ecdf", num_samples=50)
     return
-
-
 
 
 @app.cell(hide_code=True)
@@ -1221,7 +1219,7 @@ def _(coal_prior_pred, disaster_counts, eti_bounds, go, np, year_vals):
         template="plotly_white",
     )
     coal_prior_fig
-    return coal_prior_counts, coal_prior_rate, rate_low, rate_high
+    return (coal_prior_counts,)
 
 
 @app.cell(hide_code=True)
@@ -1236,6 +1234,7 @@ def _(coal_prior_counts, disaster_counts, mo):
         """
     )
     return
+
 
 @app.cell(hide_code=True)
 def _(mo):
@@ -1327,8 +1326,6 @@ def _(
         """
     )
     return
-
-
 
 
 @app.cell
@@ -1441,7 +1438,7 @@ def _(coal_idata, eti_bounds):
         f"Mean rates at 1851, 1900, 1962: {rate_1851[0]:.2f}, "
         f"{rate_1900[0]:.2f}, {rate_1962[0]:.2f} disasters/year."
     )
-    return pct_decline, rate_1851, rate_1900, rate_1962, selected_rates
+    return pct_decline, rate_1851, rate_1900, rate_1962
 
 
 @app.cell(hide_code=True)
@@ -1489,9 +1486,7 @@ def _(mo):
 
 
 @app.cell
-def _(
-    RANDOM_SEED, coal_idata, coal_model, pm, posterior_subset, results_dir
-):
+def _(RANDOM_SEED, coal_idata, coal_model, pm, posterior_subset, results_dir):
     with coal_model:
         coal_ppc = pm.sample_posterior_predictive(
             posterior_subset(coal_idata, draws_per_chain=100),
@@ -1504,7 +1499,16 @@ def _(
 
 
 @app.cell
-def _(PYMC_GREEN, coal_ppc, disaster_counts, eti_bounds, go, np, pl, year_vals):
+def _(
+    PYMC_GREEN,
+    coal_ppc,
+    disaster_counts,
+    eti_bounds,
+    go,
+    np,
+    pl,
+    year_vals,
+):
     ppc_counts = coal_ppc["posterior_predictive"]["y"]
     ppc_count_low, ppc_count_high = eti_bounds(ppc_counts)
     count_mean = ppc_counts.mean(dim=("chain", "draw"))
@@ -1569,7 +1573,7 @@ def _(PYMC_GREEN, coal_ppc, disaster_counts, eti_bounds, go, np, pl, year_vals):
     )
     ppc_fig
     ppc_discrepancies
-    return ppc_discrepancies
+    return (ppc_discrepancies,)
 
 
 @app.cell
