@@ -876,13 +876,13 @@ def _(conc_std, posterior_summary):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ### Exercise: extrapolate beyond the observed time range
+    ### Exercise: extrapolate with full posterior uncertainty
 
-    Predict out to, say, 40 hours past dose — well beyond the last
-    observation at 24.37 hours — using `gp.predict` at the posterior
-    mean hyperparameters. What happens to the mean and the uncertainty
-    band as you move past the data? Expand the solution below once
-    you've made a prediction.
+    Use the fresh prediction model and posterior draws to predict to 40 hours
+    past dose — well beyond the last observation at 24.37 hours. Contrast the
+    full-posterior 89% ETI with a plug-in MAP prediction: which uncertainty
+    sources does the latter omit, and toward what specified mean function does
+    the full prediction return?
     """)
     return
 
@@ -972,61 +972,62 @@ def _(
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.accordion(
-        {
-            "Exercise — what does the linear mean function buy us?": mo.md(
+    mo.vstack(
+        [
+            mo.md(
                 r"""
-                Suppose you removed the `pm.gp.mean.Linear` and used a
-                *zero-mean* GP on the same `log1p(time)` input. Predict what
-                would change in (a) the fit within the observed data and (b) the
-                extrapolation beyond 24 hours.
-
-                **Solution.** Within the data the fit would look *similar* — a
-                flexible GP can represent the trend through its covariance
-                alone, so the posterior mean still traces rise–peak–decay. The
-                difference shows up in **extrapolation and in how hard the GP has
-                to work**. With a zero mean, everything past the last point
-                reverts toward 0 (the standardized output mean, i.e. the overall
-                average concentration) rather than toward a *sloped* line; and
-                the lengthscale/amplitude must stretch to explain the global
-                downward drift that the linear mean would otherwise soak up
-                cheaply. A mean function encodes the part of the trend you can
-                name — here, "log-concentration falls roughly linearly in
-                log-time" — leaving the GP to model only the residual curvature,
-                which usually yields tighter, more stable hyperparameter
-                posteriors.
+                **Exercise — what does the linear mean function buy us?**
+                Suppose you removed `pm.gp.mean.Linear` and used a zero-mean GP
+                on the same `log1p(time)` input. Predict the consequences both
+                within the observed range and beyond 24 hours before expanding
+                the discussion.
                 """
-            )
-        }
-    )
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.accordion(
-        {
-            "Exercise — would ExpQuad fit better than Matérn 5/2?": mo.md(
+            ),
+            mo.accordion(
+                {
+                    "Discussion": mo.md(
+                        r"""
+                        Within the data, a flexible GP could still trace much of
+                        the curve. The difference is clearest in extrapolation
+                        and in the division of labor: a zero-mean GP returns
+                        toward standardized zero, while this model returns toward
+                        its learned linear mean. Without that mean, the
+                        covariance must explain both broad drift and local
+                        curvature. The linear mean encodes the named global
+                        trend and leaves the Matérn residual GP to express
+                        departures from it; full-posterior prediction retains
+                        uncertainty in both pieces.
+                        """
+                    )
+                }
+            ),
+            mo.md(
                 r"""
-                We used a `Matern52` kernel. The `ExpQuad` (squared-exponential)
-                kernel is smoother still — infinitely differentiable, versus
-                Matérn 5/2's two derivatives. Would swapping it in improve this
-                pharmacokinetic fit? Reason about it before trying.
-
-                **Solution.** Probably not meaningfully, and possibly worse.
-                ExpQuad assumes the underlying function is *extremely* smooth,
-                but real absorption/elimination curves have a fairly sharp early
-                rise that an over-smooth kernel tends to round off or overshoot,
-                especially with a single global lengthscale. Matérn 5/2 is the
-                common default for physical processes precisely because it allows
-                a little more local "give" while still looking continuous. The
-                rigorous way to choose is out-of-sample predictive accuracy
-                (LOO), which is beyond this intro course — but the intuition is:
-                *match the kernel's assumed smoothness to the process*, and when
-                unsure, Matérn 5/2 is a safer default than ExpQuad.
+                **Exercise — assess the Matérn 5/2 prior implication.** Before
+                changing kernels, compare prior draws and the observed-data
+                posterior-predictive discrepancy. What feature of the
+                pharmacokinetic curve would make an infinitely smooth ExpQuad
+                prior implausible, and what would you look for in the PPC after
+                the change?
                 """
-            )
-        }
+            ),
+            mo.accordion(
+                {
+                    "Discussion": mo.md(
+                        r"""
+                        ExpQuad imposes exceptionally smooth latent functions,
+                        whereas the early absorption rise can require more local
+                        flexibility. Matérn 5/2 permits a continuous but less
+                        rigid curve. This is not a claim that one kernel is
+                        universally better: inspect the prior curves first, then
+                        compare the observed residual and replicated-data
+                        discrepancies. A visually smoother posterior mean alone
+                        is not evidence that the observation model improved.
+                        """
+                    )
+                }
+            ),
+        ]
     )
     return
 
@@ -1601,13 +1602,13 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ### Exercise: change the lengthscale prior and compare
+    ### Exercise: inspect the lengthscale prior implication
 
-    The `ell ~ InverseGamma(5, 5)` prior above is weakly informative on
-    the standardized year scale. What happens to the *prior* on the
-    implied rate function if we instead favor much shorter
-    lengthscales — say `InverseGamma(2, 1)`, which puts more mass near
-    zero? Try it yourself, then expand the solution below.
+    The fitted coal model uses `ell ~ LogNormal(0, 0.5)` on standardized year.
+    Before fitting anything, replace it in a **prior-predictive** scratch model
+    with `LogNormal(-1, 0.5)`. Predict how the labeled `rate(year)` trajectories
+    and implied counts change, and why a more flexible prior does not by itself
+    justify a more flexible posterior.
     """)
     return
 
@@ -1616,21 +1617,20 @@ def _(mo):
 def _(PYMC_GREEN, RANDOM_SEED, disaster_counts, go, mo, np, pm, t, year_vals):
     _alt_coords = {"year": year_vals, "feature": ["standardized_year"]}
     with pm.Model(coords=_alt_coords):
-        _alt_year_input = pm.Data(
-            "year_input", t, dims=("year", "feature")
-        )
+        _alt_year_input = pm.Data("year_input", t, dims=("year", "feature"))
         _alt_disaster_count = pm.Data(
             "disaster_count", disaster_counts, dims="year"
         )
-        _ell_alt = pm.InverseGamma("ell", alpha=2, beta=1)
-        _eta_alt = pm.HalfNormal("eta", sigma=2)
+        _alpha_alt = pm.Normal("alpha", mu=np.log(1.5), sigma=0.5)
+        _ell_alt = pm.LogNormal("ell", mu=-1, sigma=0.5)
+        _eta_alt = pm.HalfNormal("eta", sigma=1)
         _cov_alt = _eta_alt**2 * pm.gp.cov.Matern52(1, ls=_ell_alt)
         _gp_alt = pm.gp.Latent(cov_func=_cov_alt)
         _f_alt = _gp_alt.prior("f", X=_alt_year_input, dims="year")
-        _rate_alt = pm.Deterministic("rate", pm.math.exp(_f_alt), dims="year")
-        pm.Poisson(
-            "y", mu=_rate_alt, observed=_alt_disaster_count, dims="year"
+        _rate_alt = pm.Deterministic(
+            "rate", pm.math.exp(_alpha_alt + _f_alt), dims="year"
         )
+        pm.Poisson("y", mu=_rate_alt, observed=_alt_disaster_count, dims="year")
         alt_prior = pm.sample_prior_predictive(draws=200, random_seed=RANDOM_SEED)
     alt_rate_draws = (
         alt_prior["prior"]["rate"]
@@ -1663,7 +1663,7 @@ def _(PYMC_GREEN, RANDOM_SEED, disaster_counts, go, mo, np, pm, t, year_vals):
         )
     )
     alt_fig.update_layout(
-        title="Prior draws of rate exp(f) under a short-lengthscale prior",
+        title="Prior draws of rate under a shorter-lengthscale prior",
         xaxis_title="Year",
         yaxis_title="rate",
         template="plotly_white",
@@ -1672,25 +1672,22 @@ def _(PYMC_GREEN, RANDOM_SEED, disaster_counts, go, mo, np, pm, t, year_vals):
 
     mo.accordion(
         {
-            "Solution and comparison": mo.vstack(
+            "Discussion": mo.vstack(
                 [
                     mo.md(
                         """
                         ```python
-                        ell_alt = pm.InverseGamma("ell", alpha=2, beta=1)
+                        ell_alt = pm.LogNormal("ell", mu=-1, sigma=0.5)
                         ```
 
-                        With `InverseGamma(2, 1)` the prior mass shifts
-                        toward much shorter lengthscales than
-                        `InverseGamma(5, 5)`. Prior draws of the rate
-                        function (below) are visibly wigglier year-to-year —
-                        the GP prior now expects the disaster rate to swing
-                        rapidly rather than evolve smoothly over decades.
-                        With only 112 annual counts, a short-lengthscale
-                        prior risks the posterior chasing individual noisy
-                        years rather than recovering the genuine multi-decade
-                        decline seen above — a concrete illustration of why
-                        lengthscale priors matter for GPs on sparse data.
+                        Shifting the LogNormal location downward makes shorter
+                        lengthscales more plausible, so prior rate trajectories
+                        can move more quickly from year to year. With only 112
+                        annual counts, that additional flexibility can chase
+                        noise rather than reveal sustained rate change. Inspect
+                        these labeled prior trajectories before refitting; then
+                        evaluate posterior-predictive discrepancies rather than
+                        treating a wavier posterior curve as an improvement.
                         """
                     ),
                     alt_fig,
@@ -1703,64 +1700,64 @@ def _(PYMC_GREEN, RANDOM_SEED, disaster_counts, go, mo, np, pm, t, year_vals):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.accordion(
-        {
-            "Exercise — does a Poisson likelihood capture the spread?": mo.md(
+    mo.vstack(
+        [
+            mo.md(
                 r"""
-                The posterior predictive check plotted the 89% band and it
-                covered the data. A sterner test: a Poisson likelihood forces
-                $\operatorname{Var}[y] = \mathbb E[y]$ (mean equals variance).
-                Sketch how you would check whether the coal counts are
-                *over-dispersed* relative to Poisson, and what you would switch
-                to if they were.
-
-                **Solution.** Compare a dispersion statistic between the observed
-                series and the posterior predictive draws — e.g. the ratio of
-                sample variance to sample mean — by overlaying the *distribution*
-                of that ratio across posterior predictive datasets against the
-                observed value (a posterior-predictive-check style comparison).
-                If the observed counts scatter more than Poisson allows, the
-                observed variance/mean ratio would sit in the upper tail of the
-                predictive distribution. The standard fix is a likelihood with a
-                free dispersion parameter — a **Negative Binomial** GP (same exp
-                link, same latent $f$), which adds an over-dispersion parameter
-                and reduces to Poisson as that parameter grows. Here the Poisson
-                fit looks adequate, but this is the first thing to check for
-                count GPs in the wild.
+                **Exercise — does the Poisson likelihood capture spread?**
+                Use the existing posterior-predictive distributions of zero
+                fraction, mean, variance-to-mean ratio, and maximum. Where
+                would the observed variance-to-mean ratio need to sit before a
+                Negative Binomial observation model becomes a motivated
+                alternative?
                 """
-            )
-        }
-    )
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.accordion(
-        {
-            "Exercise — could we have forced this into a marginal GP?": mo.md(
+            ),
+            mo.accordion(
+                {
+                    "Discussion": mo.md(
+                        r"""
+                        A Poisson likelihood has
+                        $\operatorname{Var}[y]=\mathbb E[y]$. Compare the
+                        observed variance-to-mean ratio to its replicated
+                        distribution, alongside the other available
+                        discrepancies. An observed value in the upper tail
+                        would indicate over-dispersion relative to the fitted
+                        model and motivate a Negative Binomial likelihood with
+                        an estimable dispersion parameter. Coverage of one
+                        band—or a pleasing rate trajectory—does not establish
+                        the count model's adequacy.
+                        """
+                    )
+                }
+            ),
+            mo.md(
                 r"""
-                A tempting shortcut: transform the counts (say $\sqrt{y}$ or
-                $\log(y+1)$) to make them roughly Gaussian, then use the fast
-                `pm.gp.Marginal` from Part A instead of the slower latent GP.
-                When is that reasonable, and what does it cost *here*?
-
-                **Solution.** It is a real technique — a variance-stabilizing
-                transform plus a Gaussian GP — and for *large* counts it works
-                passably, because a Poisson with a big mean is approximately
-                Gaussian on the $\sqrt{\cdot}$ scale. But the coal counts are
-                *small* (many years are 0, 1, or 2), where that approximation is
-                poor: $\sqrt{0}, \sqrt{1}, \sqrt{2}$ are badly non-Gaussian, the
-                transform cannot represent genuine zeros cleanly, and you throw
-                away the honest discrete count likelihood. You would gain speed
-                (marginalizing $f$) at the cost of a mis-specified observation
-                model right where the data are most informative about the low
-                rate. For small counts the latent Poisson GP is the correct tool;
-                the marginal shortcut is only defensible when counts are
-                uniformly large.
+                **Exercise — why retain a latent count GP?** Consider replacing
+                the Poisson latent GP with a transformed Gaussian marginal GP.
+                For the observed low counts, zeros, and rate interpretation,
+                identify the approximation that would be introduced and the
+                posterior-predictive quantity you would use to expose it.
                 """
-            )
-        }
+            ),
+            mo.accordion(
+                {
+                    "Discussion": mo.md(
+                        r"""
+                        A variance-stabilizing transformation can be useful for
+                        uniformly large counts, but these small counts include
+                        many zeros where the Gaussian approximation is weakest.
+                        It changes the observation model and makes honest
+                        count-scale predictions indirect. The latent Poisson GP
+                        preserves the discrete likelihood and rate-scale
+                        interpretation. If evaluating a transformed alternative,
+                        compare its replicated zero fraction, spread, and
+                        maximum on the original count scale rather than judging
+                        only a transformed-space fit.
+                        """
+                    )
+                }
+            ),
+        ]
     )
     return
 
