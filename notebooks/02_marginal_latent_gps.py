@@ -192,26 +192,38 @@ def _(mo):
 
 @app.cell
 def _(X, np, pm, y):
-    _naive_coords = {"observation": np.arange(len(y)), "feature": ["time"]}
-    with pm.Model(coords=_naive_coords) as naive_model:
-        _naive_X_data = pm.Data("X", X, dims=("observation", "feature"))
-        _naive_concentration_data = pm.Data(
-            "concentration", y, dims="observation"
-        )
-        ell_naive = pm.InverseGamma("ell", alpha=5, beta=5)
-        eta_naive = pm.HalfNormal("eta", sigma=2)
-        sigma_naive = pm.HalfNormal("sigma", sigma=1)
+    def build_naive_marginal_gp_model(raw_X, raw_y):
+        coords = {"observation": np.arange(len(raw_y)), "feature": ["time"]}
+        with pm.Model(coords=coords) as model:
+            x_data = pm.Data("X", raw_X, dims=("observation", "feature"))
+            concentration = pm.Data("concentration", raw_y, dims="observation")
+            ell = pm.LogNormal("ell", mu=0, sigma=1)
+            eta = pm.HalfNormal("eta", sigma=1)
+            sigma = pm.HalfNormal("sigma", sigma=0.5)
+            gp = pm.gp.Marginal(
+                mean_func=pm.gp.mean.Zero(),
+                cov_func=eta**2 * pm.gp.cov.Matern52(1, ls=ell),
+            )
+            gp.marginal_likelihood(
+                "y", X=x_data, y=concentration, sigma=sigma, dims="observation"
+            )
+        return model, gp
 
-        cov_naive = eta_naive**2 * pm.gp.cov.Matern52(1, ls=ell_naive)
-        gp_naive = pm.gp.Marginal(cov_func=cov_naive)
-        gp_naive.marginal_likelihood(
-            "y",
-            X=_naive_X_data,
-            y=_naive_concentration_data,
-            sigma=sigma_naive,
-            dims="observation",
-        )
-    return gp_naive, naive_model
+    naive_model, gp_naive = build_naive_marginal_gp_model(X, y)
+    return build_naive_marginal_gp_model, gp_naive, naive_model
+
+@app.cell
+def _(RANDOM_SEED, naive_model, pm):
+    with naive_model:
+        naive_prior = pm.sample_prior_predictive(draws=300, random_seed=RANDOM_SEED)
+    naive_prior_y = naive_prior["prior_predictive"]["y"]
+    print(
+        "Naive prior predictive 89% pointwise interval spans "
+        f"{float(naive_prior_y.quantile(0.055)):.2f} to "
+        f"{float(naive_prior_y.quantile(0.945)):.2f} on the standardized scale."
+    )
+    return naive_prior, naive_prior_y
+
 
 
 @app.cell
@@ -224,6 +236,7 @@ def _(mo):
 @app.cell
 def _(execute_models, mo, naive_map_button, naive_model, pm):
     mo.stop(not (naive_map_button.value or execute_models))
+    naive_model.compile_logp()(naive_model.initial_point())
     with naive_model:
         map_naive = pm.find_MAP(progressbar=False)
     print("Naive MAP optimization complete")
@@ -331,84 +344,45 @@ def _(np, time_vals, z):
 
 
 @app.cell
-def _(X_log, np, pm, y):
-    _structured_coords = {
-        "observation": np.arange(len(y)),
-        "feature": ["log_time"],
-    }
-    with pm.Model(coords=_structured_coords) as gp_model:
-        _structured_X_data = pm.Data(
-            "X", X_log, dims=("observation", "feature")
-        )
-        _structured_concentration_data = pm.Data(
-            "concentration", y, dims="observation"
-        )
-        beta_mean = pm.Normal("beta_mean", mu=0, sigma=1, dims="feature")
-        intercept_mean = pm.Normal("intercept_mean", mu=0, sigma=1)
-        mean_func = pm.gp.mean.Linear(coeffs=beta_mean, intercept=intercept_mean)
-        ell = pm.InverseGamma("ell", alpha=5, beta=5)
-        eta = pm.HalfNormal("eta", sigma=2)
-        sigma = pm.HalfNormal("sigma", sigma=1)
-        cov_func = eta**2 * pm.gp.cov.Matern52(1, ls=ell)
-        gp = pm.gp.Marginal(mean_func=mean_func, cov_func=cov_func)
-        gp.marginal_likelihood(
-            "y",
-            X=_structured_X_data,
-            y=_structured_concentration_data,
-            sigma=sigma,
-            dims="observation",
-        )
+def _(np, pm):
+    def build_marginal_gp_model(X, y, *, X_pred=None, pred_coord=None):
+        coords = {"observation": np.arange(len(y)), "feature": ["log_time"]}
+        if X_pred is not None:
+            coords["prediction"] = (
+                np.asarray(pred_coord)
+                if pred_coord is not None
+                else np.arange(len(X_pred))
+            )
+        with pm.Model(coords=coords) as model:
+            x_data = pm.Data("X", X, dims=("observation", "feature"))
+            concentration = pm.Data("concentration", y, dims="observation")
+            beta = pm.Normal("beta", mu=0, sigma=1, dims="feature")
+            intercept = pm.Normal("intercept", mu=0, sigma=1)
+            ell = pm.LogNormal("ell", mu=0, sigma=1)
+            eta = pm.HalfNormal("eta", sigma=1)
+            sigma = pm.HalfNormal("sigma", sigma=0.5)
+            gp = pm.gp.Marginal(
+                mean_func=pm.gp.mean.Linear(coeffs=beta, intercept=intercept),
+                cov_func=eta**2 * pm.gp.cov.Matern52(1, ls=ell),
+            )
+            gp.marginal_likelihood(
+                "y", X=x_data, y=concentration, sigma=sigma, dims="observation"
+            )
+            if X_pred is not None:
+                x_pred = pm.Data("X_pred", X_pred, dims=("prediction", "feature"))
+                gp.conditional("f_pred", x_pred, dims="prediction")
+                gp.conditional(
+                    "f_pred_noise", x_pred, pred_noise=True, dims="prediction"
+                )
+        return model, gp
 
-    def build_marginal_prediction_model(X_pred):
-        _prediction_coords = {
-            **_structured_coords,
-            "prediction": np.arange(len(X_pred)),
-        }
-        with pm.Model(coords=_prediction_coords) as prediction_model:
-            _prediction_X_data = pm.Data(
-                "X", X_log, dims=("observation", "feature")
-            )
-            _prediction_concentration_data = pm.Data(
-                "concentration", y, dims="observation"
-            )
-            _prediction_X_pred = pm.Data(
-                "X_pred", X_pred, dims=("prediction", "feature")
-            )
-            _prediction_beta_mean = pm.Normal(
-                "beta_mean", mu=0, sigma=1, dims="feature"
-            )
-            _prediction_intercept_mean = pm.Normal("intercept_mean", mu=0, sigma=1)
-            _prediction_mean = pm.gp.mean.Linear(
-                coeffs=_prediction_beta_mean, intercept=_prediction_intercept_mean
-            )
-            _prediction_ell = pm.InverseGamma("ell", alpha=5, beta=5)
-            _prediction_eta = pm.HalfNormal("eta", sigma=2)
-            _prediction_sigma = pm.HalfNormal("sigma", sigma=1)
-            _prediction_cov = _prediction_eta**2 * pm.gp.cov.Matern52(
-                1, ls=_prediction_ell
-            )
-            _prediction_gp = pm.gp.Marginal(
-                mean_func=_prediction_mean, cov_func=_prediction_cov
-            )
-            _prediction_gp.marginal_likelihood(
-                "y",
-                X=_prediction_X_data,
-                y=_prediction_concentration_data,
-                sigma=_prediction_sigma,
-                dims="observation",
-            )
-            _prediction_gp.conditional(
-                "f_pred", _prediction_X_pred, dims="prediction"
-            )
-            _prediction_gp.conditional(
-                "f_pred_noise",
-                _prediction_X_pred,
-                pred_noise=True,
-                dims="prediction",
-            )
-        return prediction_model
+    return (build_marginal_gp_model,)
+@app.cell
+def _(X_log, build_marginal_gp_model, y):
+    gp_model, _structured_gp = build_marginal_gp_model(X_log, y)
+    return (gp_model,)
 
-    return build_marginal_prediction_model, gp, gp_model
+
 
 
 @app.cell(hide_code=True)
@@ -429,16 +403,19 @@ def _(RANDOM_SEED, gp_model, pm):
 
 
 @app.cell
-def _(PYMC_LIGHT_BLUE, X_log, go, np, prior_pred, y):
-    prior_draws = prior_pred["prior_predictive"]["y"].values.reshape(-1, len(y))
-
+def _(PYMC_LIGHT_BLUE, RANDOM_SEED, X_log, go, np, prior_pred, y):
+    prior_draws = (
+        prior_pred["prior_predictive"]["y"]
+        .stack(sample=("chain", "draw"))
+        .transpose("sample", "observation")
+    )
     prior_fig = go.Figure()
-    rng_plot = np.random.default_rng(0)
-    for _i in rng_plot.choice(prior_draws.shape[0], size=50, replace=False):
+    rng_plot = np.random.default_rng(RANDOM_SEED)
+    for prior_draw_index in rng_plot.choice(prior_draws.sizes["sample"], size=50, replace=False):
         prior_fig.add_trace(
             go.Scatter(
                 x=X_log[:, 0],
-                y=prior_draws[_i],
+                y=prior_draws.isel(sample=prior_draw_index).values,
                 mode="lines",
                 line=dict(color=PYMC_LIGHT_BLUE, width=1),
                 opacity=0.25,
@@ -468,11 +445,11 @@ def _(PYMC_LIGHT_BLUE, X_log, go, np, prior_pred, y):
 def _(mo, prior_draws, y):
     mo.md(
         f"""
-        **Plausibility check:** prior predictive draws span
-        [{prior_draws.min():.2f}, {prior_draws.max():.2f}] on the
-        standardized scale, comfortably bracketing the observed range
-        [{y.min():.2f}, {y.max():.2f}]. Broad but not absurd — reasonable to
-        proceed.
+        **Prior implications:** the 500 draws span
+        [{float(prior_draws.min()):.2f}, {float(prior_draws.max()):.2f}] on the
+        standardized scale, compared with observed values from
+        [{y.min():.2f}, {y.max():.2f}]. This is a prior-range check, not evidence
+        that the model fits the data.
         """
     )
     return
@@ -552,6 +529,7 @@ def _(mo):
 @app.cell
 def _(execute_models, gp_model, mo, pm, structured_map_button):
     mo.stop(not (structured_map_button.value or execute_models))
+    gp_model.compile_logp()(gp_model.initial_point())
     with gp_model:
         map_estimate = pm.find_MAP(progressbar=False)
     return (map_estimate,)
@@ -582,13 +560,33 @@ def _(
     structured_fit_button,
 ):
     mo.stop(not (structured_fit_button.value or execute_models))
+    gp_model.compile_logp()(gp_model.initial_point())
     with gp_model:
         idata = pm.sample(
             chains=4,
-            random_seed=RANDOM_SEED,
+            draws=500,
+            tune=500,
+            # The default geometry produced 23 divergences at this model's
+            # near-zero-noise boundary; 0.99 resolves that observed failure.
+            target_accept=0.99,
+            init="adapt_diag",
         )
     idata.to_netcdf(results_dir / "02_marginal_gp.nc")
     return (idata,)
+@app.cell
+def _(RANDOM_SEED, gp_model, idata, pm, posterior_subset, results_dir):
+    with gp_model:
+        observed_ppc = pm.sample_posterior_predictive(
+            posterior_subset(idata, draws_per_chain=100),
+            var_names=["y"],
+            random_seed=RANDOM_SEED,
+        )
+    idata_with_ppc = idata.copy()
+    idata_with_ppc["posterior_predictive"] = observed_ppc["posterior_predictive"]
+    idata_with_ppc.to_netcdf(results_dir / "02_marginal_gp.nc")
+    return idata_with_ppc, observed_ppc
+
+
 
 
 @app.cell
@@ -608,50 +606,75 @@ def _(gp_model, idata, inference_health):
     max_rhat = float(summary["r_hat"].astype(float).max())
     print(f"Divergences: {n_div} / {n_draws_total}; health passed: {health_passed}")
     summary
-    return max_rhat, min_ess_bulk, min_ess_tail, n_div, n_draws_total, summary
+    return health_passed, max_rhat, min_ess_bulk, min_ess_tail, n_div, n_draws_total, summary
+@app.cell
+def _(az, gp_model, idata):
+    posterior_summary = az.summary(
+        idata, var_names=[rv.name for rv in gp_model.free_RVs], kind="stats"
+    )
+    return (posterior_summary,)
+
+
 
 
 @app.cell(hide_code=True)
 def _(
     map_estimate,
+    health_passed,
     max_rhat,
     min_ess_bulk,
     min_ess_tail,
     mo,
     n_div,
     n_draws_total,
-    summary,
+    posterior_summary,
 ):
     mo.md(
         f"""
-        **Diagnostics:** {n_div} divergence(s) out of {n_draws_total} draws
-        (near-zero). Minimum `ess_bulk` is {min_ess_bulk:.0f} and minimum
-        `ess_tail` is {min_ess_tail:.0f} — both comfortably above the 400
-        threshold — and maximum `r_hat` is {max_rhat:.3f} (see table above).
-        Safe to interpret.
+        **Diagnostics:** {n_div} divergence(s) out of {n_draws_total} draws.
+        Minimum `ess_bulk` is {min_ess_bulk:.0f}, minimum `ess_tail` is
+        {min_ess_tail:.0f}, and maximum `r_hat` is {max_rhat:.3f}; the computed
+        all-free-variable health status is **{health_passed}**. Interpret the
+        posterior only if that status is true.
 
         **MAP vs. posterior mean** (lengthscale $\\ell$): MAP gives
         {map_estimate["ell"]:.3f}; the full posterior mean is
-        {float(summary.loc["ell", "mean"]):.3f}. They agree closely here, which is
-        expected for a fairly well-identified, low-dimensional hyperparameter
-        posterior — but the full posterior additionally tells us the
-        *uncertainty* around that estimate, which MAP alone cannot.
+        {float(posterior_summary.loc["ell", "mean"]):.3f}. MAP and its predictive curve
+        are plug-in summaries: they condition on one hyperparameter point rather
+        than integrating hyperparameter uncertainty.
         """
     )
     return
 
+@app.cell
+def _(az, gp_model, idata):
+    _structured_free_rv_names = [rv.name for rv in gp_model.free_RVs]
+    az.plot_trace_dist(idata, var_names=_structured_free_rv_names, compact=True)
+    az.plot_rank(idata, var_names=_structured_free_rv_names)
+    return
+
+
 
 @app.cell
-def _(map_estimate, pl, summary):
-    _params = ["ell", "eta", "sigma", "beta_mean", "intercept_mean"]
+def _(map_estimate, np, pl, posterior_summary):
+    beta_row = next(index for index in posterior_summary.index if index.startswith("beta"))
     map_vs_post = pl.DataFrame(
         {
-            "parameter": _params,
-            "MAP": [round(float(map_estimate[p]), 3) for p in _params],
-            "posterior_mean": [
-                round(float(summary.loc[p, "mean"]), 3) for p in _params
+            "parameter": ["ell", "eta", "sigma", "intercept", beta_row],
+            "MAP (plug-in)": [
+                round(float(map_estimate["ell"]), 3),
+                round(float(map_estimate["eta"]), 3),
+                round(float(map_estimate["sigma"]), 3),
+                round(float(map_estimate["intercept"]), 3),
+                round(float(np.ravel(map_estimate["beta"])[0]), 3),
             ],
-            "posterior_sd": [round(float(summary.loc[p, "sd"]), 3) for p in _params],
+            "posterior_mean": [
+                round(float(posterior_summary.loc["ell", "mean"]), 3),
+                round(float(posterior_summary.loc["eta", "mean"]), 3),
+                round(float(posterior_summary.loc["sigma", "mean"]), 3),
+                round(float(posterior_summary.loc["intercept", "mean"]), 3),
+                round(float(posterior_summary.loc[beta_row, "mean"]), 3),
+            ],
         }
     )
     map_vs_post
@@ -699,75 +722,77 @@ def _(log_time_mean, log_time_std, np, time_vals):
 @app.cell
 def _(
     RANDOM_SEED,
+    X_log,
     Xnew,
-    build_marginal_prediction_model,
+    build_marginal_gp_model,
     idata,
     sample_fresh_model_predictions,
+    time_grid,
+    y,
 ):
-    ppc = sample_fresh_model_predictions(
+    structured_predictions = sample_fresh_model_predictions(
         idata,
-        lambda: build_marginal_prediction_model(Xnew),
+        lambda: build_marginal_gp_model(
+            X_log, y, X_pred=Xnew, pred_coord=time_grid
+        )[0],
         var_names=["f_pred", "f_pred_noise"],
         random_seed=RANDOM_SEED,
     )
-    return (ppc,)
+    return (structured_predictions,)
 
 
 @app.cell
 def _(
     PYMC_BLUE,
-    eti_bounds,
     conc_mean,
     conc_std,
     conc_vals,
+    eti_bounds,
     go,
     np,
-    ppc,
+    structured_predictions,
     time_grid,
     time_vals,
 ):
-    _f_pred_draws = ppc["predictions"]["f_pred"]
-    _f_pred_draws = _f_pred_draws.rename(
-        {_f_pred_draws.dims[-1]: "time_grid"}
-    ).assign_coords(time_grid=time_grid)
-    _f_pred_noise_draws = ppc["predictions"]["f_pred_noise"]
-    _f_pred_noise_draws = _f_pred_noise_draws.rename(
-        {_f_pred_noise_draws.dims[-1]: "time_grid"}
-    ).assign_coords(time_grid=time_grid)
-    _f_pred_draws = _f_pred_draws * conc_std + conc_mean
-    _f_pred_noise_draws = _f_pred_noise_draws * conc_std + conc_mean
-
-    _f_pred_mean = _f_pred_draws.mean(dim=("chain", "draw"))
-    _f_pred_lo, _f_pred_hi = eti_bounds(_f_pred_draws)
-    _f_pred_noise_lo, _f_pred_noise_hi = eti_bounds(_f_pred_noise_draws)
+    latent_draws = structured_predictions["predictions"]["f_pred"].rename(
+        {"prediction": "time_grid"}
+    )
+    structured_noisy_draws = structured_predictions["predictions"]["f_pred_noise"].rename(
+        {"prediction": "time_grid"}
+    )
+    latent_draws = latent_draws * conc_std + conc_mean
+    structured_noisy_draws = structured_noisy_draws * conc_std + conc_mean
+    latent_mean = latent_draws.mean(dim=("chain", "draw"))
+    latent_low, latent_high = eti_bounds(latent_draws)
+    structured_noisy_low, structured_noisy_high = eti_bounds(structured_noisy_draws)
 
     pred_fig = go.Figure()
     pred_fig.add_trace(
         go.Scatter(
             x=np.concatenate([time_grid, time_grid[::-1]]),
-            y=np.concatenate([_f_pred_noise_hi.values, _f_pred_noise_lo.values[::-1]]),
+            y=np.concatenate([structured_noisy_high.values, structured_noisy_low.values[::-1]]),
             fill="toself",
             fillcolor="rgba(74,158,222,0.15)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% ETI (with noise)",
+            name="89% ETI (new measurement)",
         )
     )
     pred_fig.add_trace(
         go.Scatter(
             x=np.concatenate([time_grid, time_grid[::-1]]),
-            y=np.concatenate([_f_pred_hi.values, _f_pred_lo.values[::-1]]),
+            y=np.concatenate([latent_high.values, latent_low.values[::-1]]),
             fill="toself",
             fillcolor="rgba(21,74,114,0.35)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% ETI (f only)",
+            name="89% ETI (latent f)",
         )
     )
     pred_fig.add_trace(
         go.Scatter(
             x=time_grid,
-            y=_f_pred_mean.values,
+            y=latent_mean.values,
             mode="lines",
-            name="posterior mean",
+            name="full-posterior mean",
             line=dict(color=PYMC_BLUE, width=3),
         )
     )
@@ -781,13 +806,19 @@ def _(
         )
     )
     pred_fig.update_layout(
-        title="Marginal GP fit (log1p(time) + linear mean) — f vs. f + noise",
+        title="Full-posterior marginal-GP prediction",
         xaxis_title="Time since dose (hours)",
         yaxis_title="Concentration (mg/L)",
         template="plotly_white",
     )
     pred_fig
     return
+@app.cell
+def _(az, idata_with_ppc):
+    az.plot_ppc_dist(idata_with_ppc, var_names=["y"], kind="ecdf", num_samples=50)
+    return
+
+
 
 
 @app.cell(hide_code=True)
@@ -833,8 +864,8 @@ def _(mo):
 
 
 @app.cell
-def _(conc_std, summary):
-    sigma_post_mean = float(summary.loc["sigma", "mean"])
+def _(conc_std, posterior_summary):
+    sigma_post_mean = float(posterior_summary.loc["sigma", "mean"])
     noise_var_mgL = (sigma_post_mean * conc_std) ** 2
     print(f"Posterior-mean sigma (standardized): {sigma_post_mean:.3f}")
     print(f"Constant variance gap between the bands: {noise_var_mgL:.3f} (mg/L)^2")
@@ -859,59 +890,59 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(
     PYMC_BLUE,
+    RANDOM_SEED,
+    X_log,
+    build_marginal_gp_model,
     conc_mean,
     conc_std,
     conc_vals,
+    eti_bounds,
     go,
-    gp,
-    gp_model,
     idata,
     log_time_mean,
     log_time_std,
     mo,
     np,
+    sample_fresh_model_predictions,
     time_vals,
+    y,
 ):
     extrap_grid = np.linspace(0, 40, 200)
-    extrap_Xnew = ((np.log1p(extrap_grid) - log_time_mean) / log_time_std).reshape(
-        -1, 1
+    extrap_X = ((np.log1p(extrap_grid) - log_time_mean) / log_time_std).reshape(-1, 1)
+    extrap_predictions = sample_fresh_model_predictions(
+        idata,
+        lambda: build_marginal_gp_model(
+            X_log, y, X_pred=extrap_X, pred_coord=extrap_grid
+        )[0],
+        var_names=["f_pred_noise"],
+        random_seed=RANDOM_SEED,
     )
-
-    extrap_point = {
-        var: idata["posterior"][var].mean(dim=["chain", "draw"]).values
-        for var in ["ell", "eta", "sigma", "beta_mean", "intercept_mean"]
-    }
-
-    with gp_model:
-        extrap_mu, extrap_var = gp.predict(
-            extrap_Xnew, point=extrap_point, diag=True, pred_noise=True
-        )
-
-    extrap_mu_orig = extrap_mu * conc_std + conc_mean
-    extrap_sd_orig = np.sqrt(extrap_var) * conc_std
+    extrap_noisy_draws = (
+        extrap_predictions["predictions"]["f_pred_noise"]
+        .rename({"prediction": "time"})
+        * conc_std
+        + conc_mean
+    )
+    extrap_noisy_mean = extrap_noisy_draws.mean(dim=("chain", "draw"))
+    extrap_noisy_low, extrap_noisy_high = eti_bounds(extrap_noisy_draws)
 
     extrap_fig = go.Figure()
     extrap_fig.add_trace(
         go.Scatter(
             x=np.concatenate([extrap_grid, extrap_grid[::-1]]),
-            y=np.concatenate(
-                [
-                    extrap_mu_orig + 2 * extrap_sd_orig,
-                    (extrap_mu_orig - 2 * extrap_sd_orig)[::-1],
-                ]
-            ),
+            y=np.concatenate([extrap_noisy_high.values, extrap_noisy_low.values[::-1]]),
             fill="toself",
             fillcolor="rgba(21,74,114,0.2)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="mean ± 2 SD",
+            name="full-posterior 89% ETI",
         )
     )
     extrap_fig.add_trace(
         go.Scatter(
             x=extrap_grid,
-            y=extrap_mu_orig,
+            y=extrap_noisy_mean.values,
             mode="lines",
-            name="posterior-mean-hyperparameter prediction",
+            name="full-posterior mean",
             line=dict(color=PYMC_BLUE, width=2),
         )
     )
@@ -926,43 +957,16 @@ def _(
     )
     extrap_fig.add_vline(x=time_vals.max(), line=dict(dash="dash", color="gray"))
     extrap_fig.update_layout(
-        title="Extrapolation past the last observation (dashed line)",
+        title="Full-posterior extrapolation past the last observation",
         xaxis_title="Time since dose (hours)",
         yaxis_title="Concentration (mg/L)",
         template="plotly_white",
     )
-
-    mo.accordion(
-        {
-            "Solution and diagnosis": mo.vstack(
-                [
-                    mo.md(
-                        """
-                        ```python
-                        extrap_grid = np.linspace(0, 40, 200)
-                        extrap_Xnew = ((np.log1p(extrap_grid) - log_time_mean)
-                                       / log_time_std).reshape(-1, 1)
-                        mu, var = gp.predict(extrap_Xnew, point=posterior_mean_point,
-                                              diag=True, pred_noise=True)
-                        ```
-
-                        Past the last observed point (dashed line), the mean
-                        prediction reverts toward the **linear mean
-                        function** — there is no more data pulling the GP
-                        away from it — and the uncertainty band widens
-                        rapidly, since the covariance function assigns
-                        vanishing correlation to points far (in
-                        log1p-time) from any training input. This is the
-                        correct, honest behavior: a GP does not
-                        extrapolate a learned *shape*, only reverts to its
-                        prior mean with growing uncertainty.
-                        """
-                    ),
-                    extrap_fig,
-                ]
-            )
-        }
+    mo.md(
+        "Past the observed range, the full-posterior prediction returns toward "
+        "the specified linear mean and its uncertainty widens."
     )
+    mo.accordion({"Solution": extrap_fig})
     return
 
 
@@ -1146,16 +1150,15 @@ def _(disaster_counts, np, pm, t, year_vals):
     coords = {"year": year_vals, "feature": ["standardized_year"]}
     with pm.Model(coords=coords) as coal_model:
         year_data = pm.Data("year_input", t, dims=("year", "feature"))
-        disaster_data = pm.Data("disaster_count", disaster_counts, dims="year")
-        ell_coal = pm.InverseGamma("ell", alpha=5, beta=5)
-        eta_coal = pm.HalfNormal("eta", sigma=1)
-        cov_coal = eta_coal**2 * pm.gp.cov.Matern52(1, ls=ell_coal)
-
-        gp_coal = pm.gp.Latent(cov_func=cov_coal)
-        f_coal = gp_coal.prior("f", X=year_data, dims="year")
-
-        rate = pm.Deterministic("rate", pm.math.exp(f_coal), dims="year")
-        pm.Poisson("y", mu=rate, observed=disaster_data, dims="year")
+        count_data = pm.Data("disaster_count", disaster_counts, dims="year")
+        alpha = pm.Normal("alpha", mu=np.log(1.5), sigma=0.5)
+        ell = pm.LogNormal("ell", mu=0, sigma=0.5)
+        eta = pm.HalfNormal("eta", sigma=1)
+        coal_gp = pm.gp.Latent(cov_func=eta**2 * pm.gp.cov.Matern52(1, ls=ell))
+        f = coal_gp.prior("f", X=year_data, dims="year")
+        log_rate = pm.Deterministic("log_rate", alpha + f, dims="year")
+        rate = pm.Deterministic("rate", pm.math.exp(log_rate), dims="year")
+        pm.Poisson("y", mu=rate, observed=count_data, dims="year")
     return (coal_model,)
 
 
@@ -1175,21 +1178,21 @@ def _(RANDOM_SEED, coal_model, pm):
 
 
 @app.cell
-def _(coal_prior_pred, disaster_counts, go, np, year_vals):
-    coal_prior_draws = coal_prior_pred["prior_predictive"]["y"].values.reshape(
-        -1, len(year_vals)
-    )
-    coal_prior_lo, coal_prior_hi = np.quantile(coal_prior_draws, [0.055, 0.945], axis=0)
+def _(coal_prior_pred, disaster_counts, eti_bounds, go, np, year_vals):
+    coal_prior_counts = coal_prior_pred["prior_predictive"]["y"]
+    coal_prior_rate = coal_prior_pred["prior"]["rate"]
+    prior_count_low, prior_count_high = eti_bounds(coal_prior_counts)
+    rate_low, rate_high = eti_bounds(coal_prior_rate)
 
     coal_prior_fig = go.Figure()
     coal_prior_fig.add_trace(
         go.Scatter(
             x=np.concatenate([year_vals, year_vals[::-1]]),
-            y=np.concatenate([coal_prior_hi, coal_prior_lo[::-1]]),
+            y=np.concatenate([prior_count_high.values, prior_count_low.values[::-1]]),
             fill="toself",
             fillcolor="rgba(129,194,64,0.25)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% prior predictive interval",
+            name="89% prior-predictive count ETI",
         )
     )
     coal_prior_fig.add_trace(
@@ -1198,32 +1201,40 @@ def _(coal_prior_pred, disaster_counts, go, np, year_vals):
             y=disaster_counts,
             mode="markers",
             marker=dict(color="black", size=6),
-            name="observed",
+            name="observed counts",
+        )
+    )
+    coal_prior_fig.add_trace(
+        go.Scatter(
+            x=year_vals,
+            y=coal_prior_rate.mean(dim=("chain", "draw")).values,
+            mode="lines",
+            line=dict(color="#154A72", dash="dot"),
+            name="prior mean rate",
         )
     )
     coal_prior_fig.update_layout(
-        title="Prior predictive counts vs. observed",
+        title="Prior rate and count trajectories",
         xaxis_title="Year",
-        yaxis_title="Disasters",
+        yaxis_title="Disasters / year",
         template="plotly_white",
     )
     coal_prior_fig
-    return (coal_prior_draws,)
+    return coal_prior_counts, coal_prior_rate, rate_low, rate_high
 
 
 @app.cell(hide_code=True)
-def _(coal_prior_draws, disaster_counts, mo):
+def _(coal_prior_counts, disaster_counts, mo):
     mo.md(
         f"""
-        **Plausibility check:** prior predictive counts range from
-        {coal_prior_draws.min():.0f} to {coal_prior_draws.max():.0f}, which
-        comfortably brackets the observed range
-        [{disaster_counts.min()}, {disaster_counts.max()}] without being
-        absurdly wide — reasonable to proceed to sampling.
+        **Prior implications:** simulated counts range from
+        {float(coal_prior_counts.min()):.0f} to {float(coal_prior_counts.max()):.0f};
+        the observed range is [{disaster_counts.min()}, {disaster_counts.max()}].
+        This checks whether the stated priors generate plausible rate and count
+        scales before conditioning on the data.
         """
     )
     return
-
 
 @app.cell(hide_code=True)
 def _(mo):
@@ -1251,13 +1262,17 @@ def _(
     results_dir,
 ):
     mo.stop(not (coal_fit_button.value or execute_models))
+    coal_model.compile_logp()(coal_model.initial_point())
     with coal_model:
         _start = perf_counter()
         coal_idata = pm.sample(
             random_seed=RANDOM_SEED,
-            draws=1500,
-            tune=1000,
+            draws=800,
+            tune=800,
             chains=4,
+            init="adapt_diag",
+            # correlated latent field; 0.99 resolves that observed failure.
+            target_accept=0.99,
         )
         coal_sample_seconds = perf_counter() - _start
     coal_idata.to_netcdf(results_dir / "02_coal_latent_gp.nc")
@@ -1279,8 +1294,8 @@ def _(coal_idata, coal_model, inference_health):
     print(
         f"Min ess_bulk / ess_tail (all free RVs): {coal_min_ess_bulk:.0f} / {coal_min_ess_tail:.0f}; health passed: {coal_health_passed}"
     )
-    coal_summary
     return (
+        coal_health_passed,
         coal_max_rhat,
         coal_min_ess_bulk,
         coal_min_ess_tail,
@@ -1291,6 +1306,7 @@ def _(coal_idata, coal_model, inference_health):
 
 @app.cell(hide_code=True)
 def _(
+    coal_health_passed,
     coal_max_rhat,
     coal_min_ess_bulk,
     coal_min_ess_tail,
@@ -1301,16 +1317,17 @@ def _(
 ):
     mo.md(
         f"""
-        **Diagnostics:** {coal_n_div} divergence(s) out of
-        {coal_n_draws_total} draws in {coal_sample_seconds:.1f}s of
-        sampling. Minimum `ess_bulk` across the 2 hyperparameters and 112
-        latent $f$ values is {coal_min_ess_bulk:.0f} and minimum `ess_tail`
-        is {coal_min_ess_tail:.0f} — both comfortably above the 400
-        threshold — and maximum `r_hat` is {coal_max_rhat:.3f}. Safe to
-        interpret.
+        **Diagnostics:** {coal_n_div} divergences out of
+        {coal_n_draws_total} draws in {coal_sample_seconds:.1f}s. Minimum
+        `ess_bulk` is {coal_min_ess_bulk:.0f}, minimum `ess_tail` is
+        {coal_min_ess_tail:.0f}, and maximum `r_hat` is {coal_max_rhat:.3f}.
+        The all-free-variable health status is **{coal_health_passed}**; any
+        substantive interpretation is conditional on this status.
         """
     )
     return
+
+
 
 
 @app.cell
@@ -1374,15 +1391,19 @@ def _(mo):
 
 
 @app.cell
-def _(PYMC_GREEN, coal_idata, go, np, year_vals):
-    _rate_draws = coal_idata["posterior"]["rate"].values.reshape(-1, len(year_vals))
-    _rng = np.random.default_rng(1)
+def _(PYMC_GREEN, RANDOM_SEED, coal_idata, go, np, year_vals):
+    rate_draws = (
+        coal_idata["posterior"]["rate"]
+        .stack(sample=("chain", "draw"))
+        .transpose("sample", "year")
+    )
+    rng = np.random.default_rng(RANDOM_SEED)
     spaghetti_fig = go.Figure()
-    for _i in _rng.choice(_rate_draws.shape[0], size=60, replace=False):
+    for rate_draw_index in rng.choice(rate_draws.sizes["sample"], size=60, replace=False):
         spaghetti_fig.add_trace(
             go.Scatter(
                 x=year_vals,
-                y=_rate_draws[_i],
+                y=rate_draws.isel(sample=rate_draw_index).values,
                 mode="lines",
                 line=dict(color=PYMC_GREEN, width=1),
                 opacity=0.15,
@@ -1390,7 +1411,7 @@ def _(PYMC_GREEN, coal_idata, go, np, year_vals):
             )
         )
     spaghetti_fig.update_layout(
-        title="Sixty posterior draws of the rate exp(f) — the posterior over functions",
+        title="Sixty posterior draws of the annual rate",
         xaxis_title="Year",
         yaxis_title="Disasters / year (rate)",
         template="plotly_white",
@@ -1400,35 +1421,26 @@ def _(PYMC_GREEN, coal_idata, go, np, year_vals):
 
 
 @app.cell
-def _(coal_idata, eti_bounds, year_vals):
-    _rate = coal_idata["posterior"]["rate"]
+def _(coal_idata, eti_bounds):
+    selected_rates = coal_idata["posterior"]["rate"].sel(year=[1851, 1900, 1962])
 
-    def _rate_at(year):
-        rate_at_year = _rate.sel(year=year, method="nearest")
+    def summarize_rate(year):
+        rate_at_year = selected_rates.sel(year=year)
         lower, upper = eti_bounds(rate_at_year)
         return (
             float(rate_at_year.mean(dim=("chain", "draw"))),
             (float(lower), float(upper)),
         )
 
-    rate_1851 = _rate_at(1851)
-    rate_1900 = _rate_at(1900)
-    rate_1962 = _rate_at(1962)
+    rate_1851 = summarize_rate(1851)
+    rate_1900 = summarize_rate(1900)
+    rate_1962 = summarize_rate(1962)
     pct_decline = 100 * (1 - rate_1962[0] / rate_1851[0])
     print(
-        f"Mean rate 1851: {rate_1851[0]:.2f} /yr "
-        f"(89% ETI {rate_1851[1][0]:.2f}-{rate_1851[1][1]:.2f})"
+        f"Mean rates at 1851, 1900, 1962: {rate_1851[0]:.2f}, "
+        f"{rate_1900[0]:.2f}, {rate_1962[0]:.2f} disasters/year."
     )
-    print(
-        f"Mean rate 1900: {rate_1900[0]:.2f} /yr "
-        f"(89% ETI {rate_1900[1][0]:.2f}-{rate_1900[1][1]:.2f})"
-    )
-    print(
-        f"Mean rate 1962: {rate_1962[0]:.2f} /yr "
-        f"(89% ETI {rate_1962[1][0]:.2f}-{rate_1962[1][1]:.2f})"
-    )
-    print(f"Overall decline 1851 to 1962: {pct_decline:.0f}%")
-    return pct_decline, rate_1851, rate_1900, rate_1962
+    return pct_decline, rate_1851, rate_1900, rate_1962, selected_rates
 
 
 @app.cell(hide_code=True)
@@ -1476,41 +1488,42 @@ def _(mo):
 
 
 @app.cell
-def _(RANDOM_SEED, coal_idata, coal_model, pm, posterior_subset):
+def _(
+    RANDOM_SEED, coal_idata, coal_model, pm, posterior_subset, results_dir
+):
     with coal_model:
         coal_ppc = pm.sample_posterior_predictive(
             posterior_subset(coal_idata, draws_per_chain=100),
             var_names=["y"],
             random_seed=RANDOM_SEED,
         )
+    coal_idata["posterior_predictive"] = coal_ppc["posterior_predictive"]
+    coal_idata.to_netcdf(results_dir / "02_coal_latent_gp.nc")
     return (coal_ppc,)
 
 
 @app.cell
-def _(PYMC_GREEN, coal_ppc, disaster_counts, go, np, year_vals):
-    ppc_counts = coal_ppc["posterior_predictive"]["y"].values.reshape(
-        -1, len(year_vals)
-    )
-    ppc_mean = ppc_counts.mean(axis=0)
-    ppc_lo, ppc_hi = np.quantile(ppc_counts, [0.055, 0.945], axis=0)
-
+def _(PYMC_GREEN, coal_ppc, disaster_counts, eti_bounds, go, np, pl, year_vals):
+    ppc_counts = coal_ppc["posterior_predictive"]["y"]
+    ppc_count_low, ppc_count_high = eti_bounds(ppc_counts)
+    count_mean = ppc_counts.mean(dim=("chain", "draw"))
     ppc_fig = go.Figure()
     ppc_fig.add_trace(
         go.Scatter(
             x=np.concatenate([year_vals, year_vals[::-1]]),
-            y=np.concatenate([ppc_hi, ppc_lo[::-1]]),
+            y=np.concatenate([ppc_count_high.values, ppc_count_low.values[::-1]]),
             fill="toself",
             fillcolor="rgba(129,194,64,0.25)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% posterior predictive interval",
+            name="89% posterior-predictive ETI",
         )
     )
     ppc_fig.add_trace(
         go.Scatter(
             x=year_vals,
-            y=ppc_mean,
+            y=count_mean.values,
             mode="lines",
-            name="posterior predictive mean",
+            name="posterior-predictive mean",
             line=dict(color=PYMC_GREEN, width=2),
         )
     )
@@ -1524,12 +1537,54 @@ def _(PYMC_GREEN, coal_ppc, disaster_counts, go, np, year_vals):
         )
     )
     ppc_fig.update_layout(
-        title="Posterior predictive count check",
+        title="Posterior-predictive annual counts",
         xaxis_title="Year",
         yaxis_title="Disasters",
         template="plotly_white",
     )
+
+    mean = ppc_counts.mean(dim="year")
+    discrepancy_draws = {
+        "zero fraction": (ppc_counts == 0).mean(dim="year"),
+        "mean": mean,
+        "variance / mean": ppc_counts.var(dim="year") / mean,
+        "maximum": ppc_counts.max(dim="year"),
+    }
+    observed_discrepancies = {
+        "zero fraction": float((disaster_counts == 0).mean()),
+        "mean": float(disaster_counts.mean()),
+        "variance / mean": float(disaster_counts.var() / disaster_counts.mean()),
+        "maximum": float(disaster_counts.max()),
+    }
+    ppc_discrepancies = pl.DataFrame(
+        {
+            "statistic": list(discrepancy_draws),
+            "observed": list(observed_discrepancies.values()),
+            "predictive_percentile": [
+                float((draws <= observed_discrepancies[name]).mean())
+                for name, draws in discrepancy_draws.items()
+            ],
+        }
+    )
     ppc_fig
+    ppc_discrepancies
+    return ppc_discrepancies
+
+
+@app.cell
+def _(az, coal_idata):
+    az.plot_ppc_dist(coal_idata, var_names=["y"], kind="ecdf", num_samples=100)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo, ppc_discrepancies):
+    mo.md(
+        "The ECDF and table compare observed zero fraction, mean, variance-to-mean "
+        "ratio, and maximum with posterior-predictive distributions. They describe "
+        "these checked discrepancies; they do not establish general adequacy."
+    )
+    ppc_discrepancies
     return
 
 
@@ -1577,15 +1632,21 @@ def _(PYMC_GREEN, RANDOM_SEED, disaster_counts, go, mo, np, pm, t, year_vals):
             "y", mu=_rate_alt, observed=_alt_disaster_count, dims="year"
         )
         alt_prior = pm.sample_prior_predictive(draws=200, random_seed=RANDOM_SEED)
-    alt_rate_draws = alt_prior["prior"]["rate"].values.reshape(-1, len(year_vals))
+    alt_rate_draws = (
+        alt_prior["prior"]["rate"]
+        .stack(sample=("chain", "draw"))
+        .transpose("sample", "year")
+    )
 
     alt_fig = go.Figure()
-    rng_alt = np.random.default_rng(0)
-    for _i in rng_alt.choice(alt_rate_draws.shape[0], size=30, replace=False):
+    rng_alt = np.random.default_rng(RANDOM_SEED)
+    for alt_draw_index in rng_alt.choice(
+        alt_rate_draws.sizes["sample"], size=30, replace=False
+    ):
         alt_fig.add_trace(
             go.Scatter(
                 x=year_vals,
-                y=alt_rate_draws[_i],
+                y=alt_rate_draws.isel(sample=alt_draw_index).values,
                 mode="lines",
                 line=dict(color=PYMC_GREEN, width=1),
                 opacity=0.3,
