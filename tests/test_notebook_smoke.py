@@ -2,6 +2,10 @@ import os
 import subprocess
 import time
 from pathlib import Path
+import importlib.util
+
+import pymc as pm
+
 
 import pytest
 
@@ -58,6 +62,36 @@ def run_notebook(
 
 def test_00_environment_check():
     run_notebook(NB / "00_environment_check.py", timeout_s=120)
+
+
+def test_00_environment_check_gp_contract():
+    spec = importlib.util.spec_from_file_location(
+        "environment_check",
+        NB / "00_environment_check.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    _, definitions = module.app.run()
+    model = definitions["env_check_model"]
+    gp = definitions["gp"]
+
+    assert model.coords == {"obs": tuple(range(20)), "feature": ("x",)}
+    assert model.named_vars_to_dims == {
+        "X": ("obs", "feature"),
+        "y_obs": ("obs",),
+        "y": ("obs",),
+    }
+    assert model.named_vars["X"].get_value().shape == (20, 1)
+    assert model.named_vars["y_obs"].get_value().shape == (20,)
+    assert model.named_vars["ell"].owner.op.name == "lognormal"
+    assert model.named_vars["eta"].owner.op.name == "halfnormal"
+    assert model.named_vars["sigma"].owner.op.name == "halfnormal"
+    matern = gp.cov_func._factor_list[0]
+    assert isinstance(matern, pm.gp.cov.Matern52)
+    assert matern.ls is model.named_vars["ell"]
+    assert model.compile_logp()(model.initial_point()).shape == ()
 
 
 def test_01_foundations():
