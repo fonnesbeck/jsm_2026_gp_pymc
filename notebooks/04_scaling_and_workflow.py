@@ -623,6 +623,73 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
+    ### Exercise: interrogate the FITC approximation
+
+    The FITC model uses 25 fixed k-means inducing locations for 450 tide
+    observations. Before altering an inducing set, identify the two distinct
+    approximations in its predictive distribution: the low-rank inducing
+    projection and the nonnegative diagonal correction. Then propose a
+    diagnostic comparison that could reveal an inducing set that is too sparse
+    near a rapid tidal feature. Use the latent and noisy conditionals
+    separately: which one answers a question about the smooth water-level
+    function, and which one answers a question about a replicated observation?
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "Hint": mo.md(
+                r"""
+                Keep the inducing locations fixed while comparing
+                approximation settings. Start with prior trajectories: a
+                generative FITC prior has to use the same jittered $K_{uu}$ in
+                its inducing draw and projection. In posterior prediction,
+                compare the labeled latent conditional with the
+                `pred_noise=True` conditional rather than treating their
+                intervals as interchangeable.
+                """
+            )
+        }
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "Discussion": mo.md(
+                r"""
+                FITC represents long-range dependence through the inducing
+                projection $Q_{ff}$ and restores pointwise variance through the
+                clipped diagonal residual $\max(\operatorname{diag}(K_{ff} -
+                Q_{ff}), 0)$. Too few or poorly located inducing points can
+                leave a localized feature under-resolved even when the plotted
+                mean looks plausible. Compare predictions at the observed
+                inputs, especially near fast changes, against the retained
+                noisy-observation posterior predictive check; systematic local
+                residual structure is evidence about approximation accuracy.
+
+                The latent conditional concerns the underlying tidal function.
+                The noisy conditional adds measurement variation and is the
+                appropriate comparison for another recorded water level.
+                Neither comparison establishes that FITC agrees with the exact
+                Notebook 3 fit: the notebooks use different tide slices, so the
+                useful question is whether this approximation is adequate for
+                this model, data, and inducing configuration.
+                """
+            )
+        }
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
     ## Part C: Hilbert-space GP (HSGP) approximation
 
     The **Hilbert-space GP** approximation takes a completely different
@@ -1092,11 +1159,75 @@ def _(PYMC_BLUE, go, hsgp_components, hsgp_hours, hsgp_level):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    The observed ECDF sits comfortably inside the band of
-    posterior-predictive ECDFs at every quantile — the fitted model's
-    implied data distribution matches the real one well, with no
-    systematic gap indicating a mis-specified likelihood or missing
-    structure.
+    ### Exercise: assess an HSGP basis approximation
+
+    Use the live `m` and `c` controls above to choose one smaller and one
+    larger basis/domain configuration. For each choice, click **Fit full-year
+    HSGP** explicitly; changing a control invalidates the previous fit but does
+    not resample by itself. Before comparing the first-two-week components,
+    predict which boundary or basis-accuracy symptom you would expect from a
+    configuration that is too small. Record the saved `m_trend` and `L` for
+    each fit so that the later prediction and posterior-predictive checks are
+    tied to the basis actually sampled, not merely the current slider state.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "Hint": mo.md(
+                r"""
+                A basis with too few functions cannot resolve all structure
+                allowed by the kernel, while a boundary placed too near the
+                observed standardized-time range can impose artificial edge
+                behavior. The controls have different roles: `m` controls
+                basis resolution and `c` determines the boundary factor used
+                to calculate the training-domain half-width `L`.
+                """
+            )
+        }
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "Discussion": mo.md(
+                r"""
+                A small `m` can omit resolvable trend structure; a small `c`
+                places artificial basis boundaries too near the training
+                domain, which can distort behavior near its ends. Increasing
+                either setting is not automatically an improvement: it changes
+                the approximation and requires a new explicit fit. Compare the
+                persisted `m_trend` and `L` with first-two-week components,
+                posterior-predictive location and spread, and residual
+                autocorrelations at 1, 12, 24, and 168 hours.
+
+                Prefer an HSGP for this large, stationary one-dimensional
+                series only when those basis and residual checks support the
+                approximation. Persistent periodic residual structure, edge
+                artifacts, or posterior-predictive discrepancies are reasons
+                to revisit the basis, boundary, or model assumptions—not to
+                claim universal superiority over exact or sparse GPs.
+                """
+            )
+        }
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    The ECDF, location/spread summaries, and residual-autocorrelation table
+    are posterior-predictive diagnostics, not a pre-declared adequacy verdict.
+    Read the observed discrepancies against their replicated distributions:
+    values outside or near a tail keep the relevant model limitation visible
+    and should guide a basis or likelihood revision.
 
     **Out of scope for this course:** comparing models by predictive
     accuracy via `az.compute_log_likelihood` + `az.loo`/`az.compare`
@@ -1123,6 +1254,45 @@ def _(mo):
     $n$ is large, your kernel is stationary, and your input dimension
     is low — as here, where it is the only one of the three that makes
     fitting the full 8,760-point series practical at all.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Approximation workflow: a reusable checklist
+
+    Scaling a GP is not merely a matter of selecting the fastest class. Start
+    by preserving the generative question: draw from an approximation-specific
+    prior and ask whether its functions and observations can represent the
+    scientific signal. State the approximation configuration in the fitted
+    artifact—inducing locations for FITC, or basis count, boundary, periods,
+    and standardization for HSGP—so predictions can be reconstructed without
+    hidden notebook state. Then separate latent-function predictions from
+    noisy replicated observations, and compare the latter with the observed
+    data using named posterior-predictive discrepancies.
+
+    Finally, make the approximation choice conditional. FITC may be effective
+    when a Gaussian likelihood and well-covered inducing locations make its
+    residual approximation accurate. HSGP is particularly useful for a large,
+    low-dimensional stationary problem when basis and boundary checks pass.
+    Exact GPs remain the clearest reference for smaller datasets. None of
+    these labels substitutes for checking identification, prior implications,
+    inference health, and posterior-predictive behavior in the particular
+    model at hand.
+
+    For a practical review, ask four concrete questions. Are the covariate
+    domain and units represented consistently in the approximation and its
+    prediction model? Do prior draws reveal behavior that contradicts known
+    scale, periodicity, or smoothness? Do sampled free variables have healthy
+    diagnostics before their posterior is used for prediction? And do
+    replicated observations reproduce the discrepancies that matter for the
+    decision? This sequence prevents an efficient approximation from becoming
+    an opaque black box. It also keeps the distinction clear between an
+    approximation that is computationally convenient and one that is adequate
+    for the observed data and stated predictive task.
+    Apply this checklist anew for each fit.
     """)
     return
 

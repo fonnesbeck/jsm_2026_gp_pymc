@@ -1868,94 +1868,110 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.accordion(
-        {
-            "Exercise 4 — reason about smoothness from the lengthscale": mo.md(
+    mo.vstack(
+        [
+            mo.md(
                 r"""
-                In the hand-built GP regression above we set the lengthscale
-                to `cond_ls = 0.6` on the *standardized* time axis. If you
-                halved it to 0.3, would the posterior mean curve get smoother
-                or wigglier, and what would happen to the fit near the sparse
-                tail?
-
-                **Solution.** Halving the lengthscale makes the GP *wigglier*:
-                correlation now decays over a shorter distance, so the
-                posterior mean is freer to bend between points and will chase
-                the data more closely — potentially over-fitting the early,
-                densely sampled rise. In the sparse tail the effect is
-                different and instructive: with a short lengthscale, test
-                points quickly lose correlation with any training point, so
-                the posterior mean **reverts to the prior mean (zero)** faster
-                and the uncertainty band balloons sooner past the data. A
-                longer lengthscale extrapolates its trend further but risks
-                oversmoothing the rise. Choosing $\ell$ is exactly this
-                trade-off — which is why we *infer* it in Notebook 2 rather
-                than guess.
+                **Exercise 4 — smoothness and prior implications.** In the
+                hand-built GP regression above we set `cond_ls = 0.6` on the
+                *standardized* time axis. Before changing it to 0.3, predict
+                how the prior functions, the fit near the sparse tail, and the
+                89% conditional interval should change.
                 """
-            )
-        }
+            ),
+            mo.accordion(
+                {
+                    "Discussion": mo.md(
+                        r"""
+                        Halving the lengthscale makes prior functions wigglier:
+                        correlation now decays over a shorter distance. The
+                        conditional mean can bend more between observations,
+                        potentially chasing the densely sampled early rise. In
+                        the sparse tail, prediction points lose correlation
+                        with training points sooner, so the mean returns to the
+                        zero prior mean faster and the 89% conditional interval
+                        expands earlier. A longer lengthscale carries structure
+                        farther but can oversmooth the rise. This prior
+                        implication is why Notebook 2 infers `ell` rather than
+                        treating one hand-set value as established.
+                        """
+                    )
+                }
+            ),
+        ]
     )
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.accordion(
-        {
-            "Exercise 5 — condition on an added point": mo.md(
+    mo.vstack(
+        [
+            mo.md(
                 r"""
-                Imagine appending one extra, very precise observation right at
-                the peak of the curve (say a measurement at 1.5 hours). Using
-                only the conditioning formula
+                **Exercise 5 — condition on an added point.** Imagine
+                appending one extra, very precise observation at the peak (say,
+                1.5 hours). Using the conditioning formula
                 $\mathbf f_*\mid\mathbf y \sim \mathcal N(K_*(K+\sigma^2
                 I)^{-1}\mathbf y,\ K_{**}-K_*(K+\sigma^2 I)^{-1}K_*^\top)$,
-                what happens to the posterior *mean* and *variance* near that
-                new point?
-
-                **Solution.** Adding a point augments $X$ (and $\mathbf y$)
-                with one more row/column, so $K_*$ gains a column that is
-                large for test points near 1.5 hours. Through the mean term
-                $K_*(K+\sigma^2 I)^{-1}\mathbf y$, the posterior mean is pulled
-                toward the new observation in its neighbourhood; through the
-                variance term $K_{**}-K_*(K+\sigma^2 I)^{-1}K_*^\top$, the
-                subtracted quantity grows there, so the **posterior variance
-                shrinks** near the new point. A precise ($\sigma$ small)
-                measurement shrinks it more. Far from 1.5 hours — beyond a
-                lengthscale away — the new point is nearly uncorrelated and
-                barely changes anything. This is conditioning "tightening the
-                cloud" exactly where information arrives, the same shrink you
-                saw in the bivariate example.
+                predict the local posterior mean and variance changes before
+                checking the discussion.
                 """
-            )
-        }
+            ),
+            mo.accordion(
+                {
+                    "Discussion": mo.md(
+                        r"""
+                        The added row and column make $K_*$ large for prediction
+                        points near 1.5 hours. The posterior mean is pulled
+                        toward the new observation, while the subtracted
+                        covariance term grows locally, so posterior variance
+                        shrinks. A smaller measurement-noise $\sigma$ produces
+                        more shrinkage. Beyond roughly a lengthscale from the
+                        added point, correlation is weak and the conditional
+                        distribution changes little. This is the same local
+                        information update seen in the bivariate-normal
+                        conditioning example.
+                        """
+                    )
+                }
+            ),
+        ]
     )
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.accordion(
-        {
-            "Exercise 6 — vary the amplitude and predict the band width": mo.md(
+    mo.vstack(
+        [
+            mo.md(
                 r"""
-                In the slider widget, suppose you doubled the amplitude $\eta$
-                but left the lengthscale fixed. Would the *prior* uncertainty
-                band around a future GP-regression fit get wider or narrower,
-                and would the functions become any wigglier?
-
-                **Solution.** Doubling $\eta$ doubles the prior standard
-                deviation of the function values ($k(x,x)=\eta^2$), so the
-                cloud of prior functions spans a **wider** vertical range and
-                a prior predictive band would be correspondingly wider — but
-                the functions are **not** any wigglier, because smoothness is
-                governed solely by the lengthscale, which you held fixed. This
-                separation of concerns — amplitude sets vertical scale,
-                lengthscale sets horizontal wiggle — is why the two
-                hyperparameters are usually given independent priors and
-                interpreted separately, as we do in the notebooks that follow.
+                **Exercise 6 — amplitude and prior scale.** In the slider
+                widget, double the amplitude $\eta$ while leaving the
+                lengthscale fixed. Predict what changes in the prior-function
+                vertical scale and in the conditional interval, and what does
+                not change about smoothness.
                 """
-            )
-        }
+            ),
+            mo.accordion(
+                {
+                    "Discussion": mo.md(
+                        r"""
+                        Doubling $\eta$ doubles the prior standard deviation of
+                        function values because $k(x,x)=\eta^2$. The prior cloud
+                        therefore has a wider vertical range, and conditional
+                        uncertainty is generally larger where data are weak.
+                        The functions are not more wiggly: their horizontal
+                        smoothness remains governed by the unchanged
+                        lengthscale. The distinct amplitude and lengthscale
+                        roles motivate separately interpretable priors in the
+                        fitted GP notebooks.
+                        """
+                    )
+                }
+            ),
+        ]
     )
     return
 

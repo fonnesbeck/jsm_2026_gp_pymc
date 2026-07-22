@@ -747,7 +747,16 @@ def _(mo):
     differ from weekdays), and a slow **seasonal** drift on top." Using
     only `Matern52` and `Periodic`, sketch the additive kernel you
     would use (as a sum of terms with a period argument, where
-    relevant) before expanding the solution.
+    relevant) before expanding the solution. Then state the input units
+    explicitly: if you standardize hourly inputs before fitting, how must
+    the 24-hour and 168-hour periods be transformed? Finally, describe a
+    prior-predictive pattern that would warn you that the periodic amplitudes
+    or within-cycle lengthscales are implausible before you interpret a
+    posterior fit. Relate that check to the tide example: its semidiurnal and
+    diurnal periods are physical knowledge, while their amplitudes and the
+    nonperiodic trend remain uncertain model components.
+    Explain why fixed periods do not eliminate uncertainty about observed
+    timing, amplitude, noise, or boundary behavior.
     """)
     return
 
@@ -770,9 +779,15 @@ def _(mo):
                 each a repeating `Periodic` component at the right period
                 (in whatever units the input axis uses — hours here) except
                 the slow drift, which has no fixed period and so gets a
-                `Matern52`. The relative `eta` amplitudes let the model
-                learn that the weekly effect is weaker than the daily one,
-                exactly as described, rather than that being hard-coded.
+                `Matern52`. With standardized input, divide each physical
+                period by the hourly input standard deviation before building
+                the kernel; a literal `period=24` would otherwise be in the
+                wrong units. The relative `eta` amplitudes let the model learn
+                that the weekly effect is weaker than the daily one, rather
+                than hard-coding that conclusion. Prior curves that oscillate
+                too sharply, vary wildly in height, or suppress the stated
+                daily rhythm are a reason to revise priors or kernel
+                parameters before sampling—not a sampler-tuning problem.
                 """
             )
         }
