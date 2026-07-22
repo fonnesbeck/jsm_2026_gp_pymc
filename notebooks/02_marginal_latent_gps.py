@@ -37,9 +37,18 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
+    import sys
     from pathlib import Path
+
+    notebook_dir = mo.notebook_dir()
+    if notebook_dir is None:
+        raise RuntimeError("Marimo could not determine this notebook's directory.")
+    project_root = notebook_dir.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
     from inference_contract import (
-        eti,
+        eti_bounds,
         inference_health,
         posterior_subset,
         sample_fresh_model_predictions,
@@ -63,10 +72,10 @@ def _(mo):
     execute_models = is_script_mode or bool(
         mo.cli_args().get("execute-models", False)
     )
-    results_dir = Path(__file__).parent.parent / "results"
+    results_dir = project_root / "results"
     results_dir.mkdir(exist_ok=True)
 
-    data_dir = Path(__file__).parent.parent / "data"
+    data_dir = project_root / "data"
 
     def z(a):
         """Standardize an array: (a - mean) / population std."""
@@ -80,7 +89,7 @@ def _(mo):
         az,
         data_dir,
         execute_models,
-        eti,
+        eti_bounds,
         go,
         inference_health,
         np,
@@ -89,6 +98,7 @@ def _(mo):
         pm,
         posterior_subset,
         results_dir,
+        sample_fresh_model_predictions,
         z,
     )
 
@@ -331,7 +341,7 @@ def _(X_log, np, pm, y):
         _structured_concentration_data = pm.Data(
             "concentration", y, dims="observation"
         )
-        beta_mean = pm.Normal("beta_mean", mu=0, sigma=1)
+        beta_mean = pm.Normal("beta_mean", mu=0, sigma=1, dims="feature")
         intercept_mean = pm.Normal("intercept_mean", mu=0, sigma=1)
         mean_func = pm.gp.mean.Linear(coeffs=beta_mean, intercept=intercept_mean)
         ell = pm.InverseGamma("ell", alpha=5, beta=5)
@@ -362,7 +372,9 @@ def _(X_log, np, pm, y):
             _prediction_X_pred = pm.Data(
                 "X_pred", X_pred, dims=("prediction", "feature")
             )
-            _prediction_beta_mean = pm.Normal("beta_mean", mu=0, sigma=1)
+            _prediction_beta_mean = pm.Normal(
+                "beta_mean", mu=0, sigma=1, dims="feature"
+            )
             _prediction_intercept_mean = pm.Normal("intercept_mean", mu=0, sigma=1)
             _prediction_mean = pm.gp.mean.Linear(
                 coeffs=_prediction_beta_mean, intercept=_prediction_intercept_mean
@@ -702,7 +714,7 @@ def _(
 @app.cell
 def _(
     PYMC_BLUE,
-    eti,
+    eti_bounds,
     conc_mean,
     conc_std,
     conc_vals,
@@ -724,12 +736,8 @@ def _(
     _f_pred_noise_draws = _f_pred_noise_draws * conc_std + conc_mean
 
     _f_pred_mean = _f_pred_draws.mean(dim=("chain", "draw"))
-    _f_pred_interval = eti(_f_pred_draws)
-    _f_pred_lo = _f_pred_interval.sel(quantile=0.055)
-    _f_pred_hi = _f_pred_interval.sel(quantile=0.945)
-    _f_pred_noise_interval = eti(_f_pred_noise_draws)
-    _f_pred_noise_lo = _f_pred_noise_interval.sel(quantile=0.055)
-    _f_pred_noise_hi = _f_pred_noise_interval.sel(quantile=0.945)
+    _f_pred_lo, _f_pred_hi = eti_bounds(_f_pred_draws)
+    _f_pred_noise_lo, _f_pred_noise_hi = eti_bounds(_f_pred_noise_draws)
 
     pred_fig = go.Figure()
     pred_fig.add_trace(
@@ -1304,12 +1312,10 @@ def _(
 
 
 @app.cell
-def _(PYMC_BLUE, coal_idata, disaster_counts, eti, go, np, year_vals):
+def _(PYMC_BLUE, coal_idata, disaster_counts, eti_bounds, go, np, year_vals):
     _rate_posterior = coal_idata["posterior"]["rate"]
     _rate_mean = _rate_posterior.mean(dim=("chain", "draw"))
-    _rate_interval = eti(_rate_posterior)
-    _rate_lo = _rate_interval.sel(quantile=0.055)
-    _rate_hi = _rate_interval.sel(quantile=0.945)
+    _rate_lo, _rate_hi = eti_bounds(_rate_posterior)
 
     rate_fig = go.Figure()
     rate_fig.add_trace(
@@ -1392,18 +1398,15 @@ def _(PYMC_GREEN, coal_idata, go, np, year_vals):
 
 
 @app.cell
-def _(coal_idata, eti, year_vals):
+def _(coal_idata, eti_bounds, year_vals):
     _rate = coal_idata["posterior"]["rate"]
 
     def _rate_at(year):
         rate_at_year = _rate.sel(year=year, method="nearest")
-        interval = eti(rate_at_year)
+        lower, upper = eti_bounds(rate_at_year)
         return (
             float(rate_at_year.mean(dim=("chain", "draw"))),
-            (
-                float(interval.sel(quantile=0.055)),
-                float(interval.sel(quantile=0.945)),
-            ),
+            (float(lower), float(upper)),
         )
 
     rate_1851 = _rate_at(1851)
@@ -1569,6 +1572,7 @@ def _(PYMC_GREEN, RANDOM_SEED, disaster_counts, go, mo, np, pm, t, year_vals):
         pm.Poisson(
             "y", mu=_rate_alt, observed=_alt_disaster_count, dims="year"
         )
+        alt_prior = pm.sample_prior_predictive(draws=200, random_seed=RANDOM_SEED)
     alt_rate_draws = alt_prior["prior"]["rate"].values.reshape(-1, len(year_vals))
 
     alt_fig = go.Figure()
