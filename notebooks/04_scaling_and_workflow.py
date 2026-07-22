@@ -46,7 +46,12 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     from pathlib import Path
-    from inference_contract import eti, inference_health, posterior_subset
+    from inference_contract import (
+        eti,
+        inference_health,
+        posterior_subset,
+        sample_fresh_model_predictions,
+    )
     from time import perf_counter
 
     import arviz as az
@@ -280,71 +285,81 @@ def _(mo):
 
 
 @app.cell
-def _(X_sparse, np, pm, sparse_hours_std):
+def _(X_sparse, np, pm, sparse_hours_std, y_sparse):
     N_INDUCING = 25
-    SPARSE_SEMI_PERIOD_HOURS = 12.42  # M2 lunar semidiurnal constituent
-    SPARSE_DIURNAL_PERIOD_HOURS = 23.93  # K1 lunar diurnal constituent
-    SPARSE_PERIODIC_LS_STD = 0.5  # fixed within-cycle shape (standardized time units)
-    sparse_semi_period_std = SPARSE_SEMI_PERIOD_HOURS / sparse_hours_std
-    sparse_diurnal_period_std = SPARSE_DIURNAL_PERIOD_HOURS / sparse_hours_std
-
-    Xu_init = pm.gp.util.kmeans_inducing_points(N_INDUCING, X_sparse)
-
+    SPARSE_PERIODIC_LS_STD = 0.5
+    sparse_semi_period_std = 12.42 / sparse_hours_std
+    sparse_diurnal_period_std = 23.93 / sparse_hours_std
+    _Xu_init = pm.gp.util.kmeans_inducing_points(N_INDUCING, X_sparse)
     _sparse_coords = {
         "observation": np.arange(len(X_sparse)),
         "feature": ["time"],
         "inducing": np.arange(N_INDUCING),
     }
-    with pm.Model(coords=_sparse_coords) as sparse_model:
-        ell_s_trend = pm.InverseGamma("ell_s_trend", alpha=5, beta=5)
-        eta_s_trend = pm.HalfNormal("eta_s_trend", sigma=1)
-        cov_s_trend = eta_s_trend**2 * pm.gp.cov.Matern52(1, ls=ell_s_trend)
 
-        eta_s_semi = pm.HalfNormal("eta_s_semi", sigma=1)
-        cov_s_semi = eta_s_semi**2 * pm.gp.cov.Periodic(
-            1, period=sparse_semi_period_std, ls=SPARSE_PERIODIC_LS_STD
-        )
+    def build_sparse_gp_model(X_pred=None):
+        _coords = dict(_sparse_coords)
+        if X_pred is not None:
+            _coords["prediction"] = np.arange(len(X_pred))
+        with pm.Model(coords=_coords) as sparse_model:
+            _X_data = pm.Data("X", X_sparse, dims=("observation", "feature"))
+            _tide_level_data = pm.Data("tide_level", y_sparse, dims="observation")
+            _Xu = pm.Data("Xu", _Xu_init, dims=("inducing", "feature"))
+            _ell_trend = pm.InverseGamma("ell_s_trend", alpha=5, beta=5)
+            _eta_trend = pm.HalfNormal("eta_s_trend", sigma=1)
+            _eta_semi = pm.HalfNormal("eta_s_semi", sigma=1)
+            _eta_diurnal = pm.HalfNormal("eta_s_diurnal", sigma=1)
+            _sigma_sparse = pm.HalfNormal("sigma_sparse", sigma=0.5)
+            _cov_sparse = (
+                _eta_trend**2 * pm.gp.cov.Matern52(1, ls=_ell_trend)
+                + _eta_semi**2
+                * pm.gp.cov.Periodic(
+                    1, period=sparse_semi_period_std, ls=SPARSE_PERIODIC_LS_STD
+                )
+                + _eta_diurnal**2
+                * pm.gp.cov.Periodic(
+                    1,
+                    period=sparse_diurnal_period_std,
+                    ls=SPARSE_PERIODIC_LS_STD,
+                )
+            )
+            _gp_sparse = pm.gp.MarginalApprox(
+                cov_func=_cov_sparse, approx="FITC"
+            )
+            _gp_sparse.marginal_likelihood(
+                "y",
+                X=_X_data,
+                Xu=_Xu,
+                y=_tide_level_data,
+                sigma=_sigma_sparse,
+                dims="observation",
+            )
+            if X_pred is not None:
+                _X_pred = pm.Data(
+                    "X_pred", X_pred, dims=("prediction", "feature")
+                )
+                _gp_sparse.conditional(
+                    "f_sparse_pred", _X_pred, dims="prediction"
+                )
+                _gp_sparse.conditional(
+                    "f_sparse_pred_noise",
+                    _X_pred,
+                    pred_noise=True,
+                    dims="prediction",
+                )
+        return sparse_model
 
-        eta_s_diurnal = pm.HalfNormal("eta_s_diurnal", sigma=1)
-        cov_s_diurnal = eta_s_diurnal**2 * pm.gp.cov.Periodic(
-            1, period=sparse_diurnal_period_std, ls=SPARSE_PERIODIC_LS_STD
-        )
-
-        cov_sparse = cov_s_trend + cov_s_semi + cov_s_diurnal
-        sigma_sparse = pm.HalfNormal("sigma_sparse", sigma=0.5)
-
-        Xu = pm.Data("Xu", Xu_init, dims=("inducing", "feature"))
-        gp_sparse = pm.gp.MarginalApprox(cov_func=cov_sparse, approx="FITC")
+    sparse_model = build_sparse_gp_model()
+    Xu = sparse_model["Xu"]
     return (
         N_INDUCING,
         SPARSE_PERIODIC_LS_STD,
         Xu,
-        gp_sparse,
-        sigma_sparse,
+        build_sparse_gp_model,
         sparse_diurnal_period_std,
         sparse_model,
         sparse_semi_period_std,
     )
-
-
-@app.cell
-def _(X_sparse, Xu, gp_sparse, pm, sigma_sparse, sparse_model, y_sparse):
-    with sparse_model:
-        _sparse_X_data = pm.Data(
-            "X", X_sparse, dims=("observation", "feature")
-        )
-        _sparse_tide_level_data = pm.Data(
-            "tide_level", y_sparse, dims="observation"
-        )
-        gp_sparse.marginal_likelihood(
-            "y",
-            X=_sparse_X_data,
-            Xu=Xu,
-            y=_sparse_tide_level_data,
-            sigma=sigma_sparse,
-            dims="observation",
-        )
-    return
 
 
 @app.cell(hide_code=True)
@@ -512,19 +527,25 @@ def _(
 
 
 @app.cell
-def _(az, sparse_idata):
-    sparse_n_div = sparse_idata["sample_stats"]["diverging"].sum().item()
+def _(inference_health, sparse_idata, sparse_model):
+    sparse_summary, sparse_health_passed = inference_health(
+        sparse_idata, sparse_model
+    )
+    sparse_n_div = sparse_summary.attrs["divergences"]
     sparse_n_draws_total = (
         sparse_idata["posterior"].sizes["chain"]
         * sparse_idata["posterior"].sizes["draw"]
     )
-    sparse_summary = az.summary(sparse_idata["posterior"])
     sparse_min_ess_bulk = float(sparse_summary["ess_bulk"].min())
     sparse_min_ess_tail = float(sparse_summary["ess_tail"].min())
     sparse_max_rhat = float(sparse_summary["r_hat"].astype(float).max())
-    print(f"Divergences: {sparse_n_div} / {sparse_n_draws_total}")
+    print(
+        f"Divergences: {sparse_n_div} / {sparse_n_draws_total}; "
+        f"health passed: {sparse_health_passed}"
+    )
     sparse_summary
     return (
+        sparse_health_passed,
         sparse_max_rhat,
         sparse_min_ess_bulk,
         sparse_min_ess_tail,
@@ -536,6 +557,7 @@ def _(az, sparse_idata):
 @app.cell(hide_code=True)
 def _(
     mo,
+    sparse_health_passed,
     sparse_max_rhat,
     sparse_min_ess_bulk,
     sparse_min_ess_tail,
@@ -550,25 +572,26 @@ def _(
         Minimum `ess_bulk` is {sparse_min_ess_bulk:.0f} and minimum
         `ess_tail` is {sparse_min_ess_tail:.0f} — both comfortably above
         the 400 threshold — and maximum `r_hat` is {sparse_max_rhat:.3f}.
-        Safe to interpret.
+        Health gate passed: **{sparse_health_passed}**.
         """
     )
     return
 
 
 @app.cell
-def _(X_sparse, gp_sparse, sparse_model):
-    with sparse_model:
-        f_sparse_pred = gp_sparse.conditional("f_sparse_pred", X_sparse)
-    return
-
-
-@app.cell
-def _(RANDOM_SEED, pm, sparse_idata, sparse_model):
-    with sparse_model:
-        sparse_ppc = pm.sample_posterior_predictive(
-            sparse_idata, var_names=["f_sparse_pred"], random_seed=RANDOM_SEED
-        )
+def _(
+    RANDOM_SEED,
+    X_sparse,
+    build_sparse_gp_model,
+    sample_fresh_model_predictions,
+    sparse_idata,
+):
+    sparse_ppc = sample_fresh_model_predictions(
+        sparse_idata,
+        lambda: build_sparse_gp_model(X_sparse),
+        var_names=["f_sparse_pred", "f_sparse_pred_noise"],
+        random_seed=RANDOM_SEED,
+    )
     return (sparse_ppc,)
 
 
@@ -586,7 +609,7 @@ def _(
     sparse_level_std,
     sparse_ppc,
 ):
-    sparse_fit = sparse_ppc["posterior_predictive"]["f_sparse_pred"]
+    sparse_fit = sparse_ppc["predictions"]["f_sparse_pred"]
     sparse_fit = sparse_fit.rename({sparse_fit.dims[-1]: "sparse_hour"}).assign_coords(
         sparse_hour=sparse_hours
     )
@@ -1098,33 +1121,22 @@ def _(hsgp_idata, results_dir):
 
 
 @app.cell
-def _(az, hsgp_idata):
-    hsgp_n_div = hsgp_idata["sample_stats"]["diverging"].sum().item()
+def _(hsgp_idata, hsgp_model, inference_health):
+    hsgp_summary, hsgp_health_passed = inference_health(hsgp_idata, hsgp_model)
+    hsgp_n_div = hsgp_summary.attrs["divergences"]
     hsgp_n_draws_total = (
         hsgp_idata["posterior"].sizes["chain"] * hsgp_idata["posterior"].sizes["draw"]
     )
-    # Full-posterior summary restricted to the model's actual free parameters —
-    # hyperparameters and the low-dimensional HSGP basis coefficients — rather
-    # than the two 8,760-length f_trend/f_semi Deterministics, which are a
-    # fixed linear projection of those same coefficients and would make
-    # ess/r_hat computation extremely slow (tens of thousands of entries)
-    # without adding any diagnostic information beyond what the coefficients
-    # already show.
-    hsgp_var_names = [
-        "ell_trend",
-        "eta_trend",
-        "f_trend_hsgp_coeffs",
-        "eta_semi",
-        "f_semi_hsgp_coeffs_",
-        "sigma_hsgp",
-    ]
-    hsgp_summary = az.summary(hsgp_idata["posterior"], var_names=hsgp_var_names)
     hsgp_min_ess_bulk = float(hsgp_summary["ess_bulk"].min())
     hsgp_min_ess_tail = float(hsgp_summary["ess_tail"].min())
     hsgp_max_rhat = float(hsgp_summary["r_hat"].astype(float).max())
-    print(f"Divergences: {hsgp_n_div} / {hsgp_n_draws_total}")
+    print(
+        f"Divergences: {hsgp_n_div} / {hsgp_n_draws_total}; "
+        f"health passed: {hsgp_health_passed}"
+    )
     hsgp_summary
     return (
+        hsgp_health_passed,
         hsgp_max_rhat,
         hsgp_min_ess_bulk,
         hsgp_min_ess_tail,
@@ -1135,6 +1147,7 @@ def _(az, hsgp_idata):
 
 @app.cell(hide_code=True)
 def _(
+    hsgp_health_passed,
     hsgp_max_rhat,
     hsgp_min_ess_bulk,
     hsgp_min_ess_tail,
@@ -1151,7 +1164,8 @@ def _(
         basis coefficients, not the derived per-timepoint arrays) — minimum
         `ess_bulk` is {hsgp_min_ess_bulk:.0f} and minimum `ess_tail` is
         {hsgp_min_ess_tail:.0f} — both above the 400 threshold — and
-        maximum `r_hat` is {hsgp_max_rhat:.3f}. Safe to interpret.
+        maximum `r_hat` is {hsgp_max_rhat:.3f}. Health gate passed:
+        **{hsgp_health_passed}**.
         """
     )
     return

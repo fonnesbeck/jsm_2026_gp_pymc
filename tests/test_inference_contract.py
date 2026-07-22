@@ -56,3 +56,60 @@ def test_inference_health_uses_all_free_variables_and_diagnostics():
 
     assert set(diagnostics.index) == {"alpha", "beta"}
     assert passed is True
+
+
+def test_prediction_sampling_uses_a_fresh_model_without_mutating_fit_model():
+    from inference_contract import sample_fresh_model_predictions
+
+    x_observed = np.array([[0.0], [1.0]])
+    y_observed = np.array([0.1, -0.2])
+    with pm.Model(coords={"observation": [0, 1], "feature": ["x"]}) as fitted_model:
+        x_data = pm.Data("X", x_observed, dims=("observation", "feature"))
+        y_data = pm.Data("y_data", y_observed, dims="observation")
+        ell = pm.HalfNormal("ell", sigma=1)
+        eta = pm.HalfNormal("eta", sigma=1)
+        sigma = pm.HalfNormal("sigma", sigma=1)
+        gp = pm.gp.Marginal(cov_func=eta**2 * pm.gp.cov.Matern52(1, ls=ell))
+        gp.marginal_likelihood("y", X=x_data, y=y_data, sigma=sigma, dims="observation")
+
+    fitted_idata = az.from_dict(
+        {
+            "posterior": {
+                "ell": np.array([[0.7, 0.8]]),
+                "eta": np.array([[1.1, 1.2]]),
+                "sigma": np.array([[0.2, 0.3]]),
+            }
+        }
+    )
+    fitted_names = set(fitted_model.named_vars)
+
+    def build_prediction_model():
+        with pm.Model(
+            coords={"observation": [0, 1], "feature": ["x"], "prediction": [0, 1]}
+        ) as prediction_model:
+            x_data = pm.Data("X", x_observed, dims=("observation", "feature"))
+            y_data = pm.Data("y_data", y_observed, dims="observation")
+            x_pred = pm.Data("X_pred", [[0.5], [1.5]], dims=("prediction", "feature"))
+            ell = pm.HalfNormal("ell", sigma=1)
+            eta = pm.HalfNormal("eta", sigma=1)
+            sigma = pm.HalfNormal("sigma", sigma=1)
+            gp = pm.gp.Marginal(
+                cov_func=eta**2 * pm.gp.cov.Matern52(1, ls=ell)
+            )
+            gp.marginal_likelihood(
+                "y", X=x_data, y=y_data, sigma=sigma, dims="observation"
+            )
+            gp.conditional("f_pred", x_pred, dims="prediction")
+        return prediction_model
+
+    predictions = sample_fresh_model_predictions(
+        fitted_idata,
+        build_prediction_model,
+        var_names=["f_pred"],
+        random_seed=42,
+    )
+
+    assert set(fitted_model.named_vars) == fitted_names
+    assert "f_pred" not in fitted_model.named_vars
+    assert "/predictions" in predictions.groups
+    assert predictions["predictions"]["f_pred"].sizes["prediction"] == 2
