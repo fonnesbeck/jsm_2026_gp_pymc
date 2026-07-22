@@ -24,17 +24,35 @@ if __name__ == "__main__":
 """
 
 
-def run_notebook(path: Path, timeout_s: int) -> float:
+def run_notebook(
+    path: Path, timeout_s: int, *, expected_stderr: str | None = None
+) -> float:
     """Execute a marimo notebook headlessly; return elapsed seconds. Raise on error."""
     start = time.time()
     proc = subprocess.run(
-        ["marimo", "export", "html", str(path), "--no-include-code", "-o", os.devnull],
+        [
+            "marimo",
+            "export",
+            "html",
+            str(path),
+            "--no-include-code",
+            "-o",
+            os.devnull,
+            "--",
+            "--execute-models",
+            "true",
+        ],
         capture_output=True,
         text=True,
         timeout=timeout_s,
     )
+    stderr = proc.stderr
     if proc.returncode != 0:
-        raise AssertionError(f"{path.name} failed:\n{proc.stderr[-2000:]}")
+        raise AssertionError(f"{path.name} failed:\n{stderr[-2000:]}")
+    if expected_stderr is not None and expected_stderr not in stderr:
+        raise AssertionError(
+            f"{path.name} did not emit {expected_stderr!r} to stderr:\n{stderr[-2000:]}"
+        )
     return time.time() - start
 
 
@@ -47,7 +65,11 @@ def test_01_foundations():
 
 
 def test_02_marginal_latent():
-    run_notebook(NB / "02_marginal_latent_gps.py", timeout_s=180)
+    run_notebook(
+        NB / "02_marginal_latent_gps.py",
+        timeout_s=180,
+        expected_stderr="Naive MAP optimization complete",
+    )
 
 
 def test_03_kernels_hierarchy():

@@ -1565,7 +1565,7 @@ def _(
 @app.cell
 def _(day_mean, day_of_season, day_std, np):
     spin_day_grid = np.linspace(day_of_season.min(), day_of_season.max(), 50)
-    spin_day_grid_z = ((spin_day_grid - day_mean) / day_std).reshape(-1, 1)
+    spin_day_grid_z = (spin_day_grid - day_mean) / day_std
     return spin_day_grid, spin_day_grid_z
 
 
