@@ -84,11 +84,14 @@ def _(mo):
         az,
         data_dir,
         execute_models,
+        eti,
+        inference_health,
         go,
         np,
         perf_counter,
         pl,
         pm,
+        posterior_subset,
         results_dir,
         z,
     )
@@ -277,7 +280,7 @@ def _(mo):
 
 
 @app.cell
-def _(X_sparse, pm, sparse_hours_std):
+def _(X_sparse, np, pm, sparse_hours_std):
     N_INDUCING = 25
     SPARSE_SEMI_PERIOD_HOURS = 12.42  # M2 lunar semidiurnal constituent
     SPARSE_DIURNAL_PERIOD_HOURS = 23.93  # K1 lunar diurnal constituent
@@ -287,7 +290,12 @@ def _(X_sparse, pm, sparse_hours_std):
 
     Xu_init = pm.gp.util.kmeans_inducing_points(N_INDUCING, X_sparse)
 
-    with pm.Model() as sparse_model:
+    _sparse_coords = {
+        "observation": np.arange(len(X_sparse)),
+        "feature": ["time"],
+        "inducing": np.arange(N_INDUCING),
+    }
+    with pm.Model(coords=_sparse_coords) as sparse_model:
         ell_s_trend = pm.InverseGamma("ell_s_trend", alpha=5, beta=5)
         eta_s_trend = pm.HalfNormal("eta_s_trend", sigma=1)
         cov_s_trend = eta_s_trend**2 * pm.gp.cov.Matern52(1, ls=ell_s_trend)
@@ -305,7 +313,7 @@ def _(X_sparse, pm, sparse_hours_std):
         cov_sparse = cov_s_trend + cov_s_semi + cov_s_diurnal
         sigma_sparse = pm.HalfNormal("sigma_sparse", sigma=0.5)
 
-        Xu = pm.Data("Xu", Xu_init)
+        Xu = pm.Data("Xu", Xu_init, dims=("inducing", "feature"))
         gp_sparse = pm.gp.MarginalApprox(cov_func=cov_sparse, approx="FITC")
     return (
         N_INDUCING,
@@ -320,10 +328,21 @@ def _(X_sparse, pm, sparse_hours_std):
 
 
 @app.cell
-def _(X_sparse, Xu, gp_sparse, sigma_sparse, sparse_model, y_sparse):
+def _(X_sparse, Xu, gp_sparse, pm, sigma_sparse, sparse_model, y_sparse):
     with sparse_model:
+        _sparse_X_data = pm.Data(
+            "X", X_sparse, dims=("observation", "feature")
+        )
+        _sparse_tide_level_data = pm.Data(
+            "tide_level", y_sparse, dims="observation"
+        )
         gp_sparse.marginal_likelihood(
-            "y", X=X_sparse, Xu=Xu, y=y_sparse, sigma=sigma_sparse
+            "y",
+            X=_sparse_X_data,
+            Xu=Xu,
+            y=_sparse_tide_level_data,
+            sigma=sigma_sparse,
+            dims="observation",
         )
     return
 
@@ -354,12 +373,17 @@ def _(
     RANDOM_SEED,
     SPARSE_PERIODIC_LS_STD,
     X_sparse,
+    np,
     pm,
     sparse_diurnal_period_std,
     sparse_semi_period_std,
     y_sparse,
 ):
-    with pm.Model() as _sparse_prior_model:
+    _sparse_prior_coords = {
+        "observation": np.arange(len(y_sparse)),
+        "feature": ["time"],
+    }
+    with pm.Model(coords=_sparse_prior_coords) as _sparse_prior_model:
         _ell_trend = pm.InverseGamma("ell_s_trend", alpha=5, beta=5)
         _eta_trend = pm.HalfNormal("eta_s_trend", sigma=1)
         _cov_trend = _eta_trend**2 * pm.gp.cov.Matern52(1, ls=_ell_trend)
@@ -376,7 +400,15 @@ def _(
 
         _sigma = pm.HalfNormal("sigma_sparse", sigma=0.5)
         _gp_exact = pm.gp.Marginal(cov_func=_cov_trend + _cov_semi + _cov_diurnal)
-        _gp_exact.marginal_likelihood("y", X=X_sparse, y=y_sparse, sigma=_sigma)
+        _X_data = pm.Data("X", X_sparse, dims=("observation", "feature"))
+        _level_data = pm.Data("tide_level", y_sparse, dims="observation")
+        _gp_exact.marginal_likelihood(
+            "y",
+            X=_X_data,
+            y=_level_data,
+            sigma=_sigma,
+            dims="observation",
+        )
 
         sparse_prior_pred = pm.sample_prior_predictive(
             draws=500, random_seed=RANDOM_SEED
@@ -545,7 +577,7 @@ def _(
     N_INDUCING,
     PYMC_BLUE,
     Xu,
-    az,
+    eti,
     go,
     np,
     sparse_hours,
@@ -554,32 +586,31 @@ def _(
     sparse_level_std,
     sparse_ppc,
 ):
-    sparse_fit_vals = (
-        sparse_ppc["posterior_predictive"]["f_sparse_pred"].values.reshape(
-            -1, len(sparse_hours)
-        )
-        * sparse_level_std
-        + sparse_level_mean
+    sparse_fit = sparse_ppc["posterior_predictive"]["f_sparse_pred"]
+    sparse_fit = sparse_fit.rename({sparse_fit.dims[-1]: "sparse_hour"}).assign_coords(
+        sparse_hour=sparse_hours
     )
-    sparse_fit_mean = sparse_fit_vals.mean(axis=0)
-    sparse_fit_hdi = az.hdi(sparse_fit_vals, prob=0.89, axis=0)
-    sparse_fit_lo, sparse_fit_hi = sparse_fit_hdi[:, 0], sparse_fit_hdi[:, 1]
+    sparse_fit = sparse_fit * sparse_level_std + sparse_level_mean
+    sparse_fit_mean = sparse_fit.mean(dim=("chain", "draw"))
+    sparse_fit_interval = eti(sparse_fit)
+    sparse_fit_lo = sparse_fit_interval.sel(quantile=0.055)
+    sparse_fit_hi = sparse_fit_interval.sel(quantile=0.945)
 
     sparse_fit_fig = go.Figure()
     sparse_fit_fig.add_trace(
         go.Scatter(
             x=np.concatenate([sparse_hours, sparse_hours[::-1]]),
-            y=np.concatenate([sparse_fit_hi, sparse_fit_lo[::-1]]),
+            y=np.concatenate([sparse_fit_hi.values, sparse_fit_lo.values[::-1]]),
             fill="toself",
             fillcolor="rgba(21,74,114,0.25)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% HDI",
+            name="89% ETI",
         )
     )
     sparse_fit_fig.add_trace(
         go.Scatter(
             x=sparse_hours,
-            y=sparse_fit_mean,
+            y=sparse_fit_mean.values,
             mode="lines",
             name="posterior mean fit",
             line=dict(color=PYMC_BLUE, width=2),
@@ -879,25 +910,37 @@ def _(
     HSGP_PERIODIC_LS_STD,
     X_hsgp,
     hsgp_semi_period_std,
+    np,
     pm,
     y_hsgp,
 ):
-    with pm.Model() as hsgp_model:
+    _hsgp_coords = {"observation": np.arange(len(y_hsgp)), "feature": ["time"]}
+    with pm.Model(coords=_hsgp_coords) as hsgp_model:
+        _hsgp_X_data = pm.Data("X", X_hsgp, dims=("observation", "feature"))
+        _hsgp_tide_level_data = pm.Data(
+            "tide_level", y_hsgp, dims="observation"
+        )
         ell_trend = pm.InverseGamma("ell_trend", alpha=5, beta=5)
         eta_trend = pm.HalfNormal("eta_trend", sigma=1)
         cov_trend = eta_trend**2 * pm.gp.cov.Matern52(1, ls=ell_trend)
         gp_trend = pm.gp.HSGP(m=[HSGP_M_TREND], c=HSGP_C, cov_func=cov_trend)
-        f_trend = gp_trend.prior("f_trend", X=X_hsgp)
+        f_trend = gp_trend.prior("f_trend", X=_hsgp_X_data, dims="observation")
 
         eta_semi = pm.HalfNormal("eta_semi", sigma=1)
         cov_semi = pm.gp.cov.Periodic(
             1, period=hsgp_semi_period_std, ls=HSGP_PERIODIC_LS_STD
         )
         gp_semi = pm.gp.HSGPPeriodic(m=8, scale=eta_semi, cov_func=cov_semi)
-        f_semi = gp_semi.prior("f_semi", X=X_hsgp)
+        f_semi = gp_semi.prior("f_semi", X=_hsgp_X_data, dims="observation")
 
         sigma_hsgp = pm.HalfNormal("sigma_hsgp", sigma=0.5)
-        pm.Normal("y", mu=f_trend + f_semi, sigma=sigma_hsgp, observed=y_hsgp)
+        pm.Normal(
+            "y",
+            mu=f_trend + f_semi,
+            sigma=sigma_hsgp,
+            observed=_hsgp_tide_level_data,
+            dims="observation",
+        )
     return (hsgp_model,)
 
 
@@ -976,11 +1019,10 @@ def _(mo):
     8,760 observations, but only the `HSGP_M_TREND` trend basis
     coefficients + 15 periodic basis coefficients + 4 hyperparameters
     are actually sampled (HSGP's fixed-basis, linear-in-$n$ structure
-    again) — so despite the data size, this is a small sampling
-    problem. We raise `target_accept` above the 0.8 default and use
-    more draws than the `1000` default, both because the near-periodic
-    structure still leaves a mildly delicate posterior geometry even
-    with only one periodic component.
+    again), so despite the data size this is a small sampling problem.
+    We use the default PyMC sampler settings and check the resulting
+    diagnostics rather than treating a tuning override as a fix for
+    posterior geometry.
     """)
     return
 
@@ -1118,7 +1160,7 @@ def _(
 @app.cell
 def _(
     PYMC_BLUE,
-    az,
+    eti,
     go,
     hsgp_hours,
     hsgp_idata,
@@ -1127,27 +1169,31 @@ def _(
     hsgp_level_std,
     np,
 ):
-    # Extract .values before adding: f_trend/f_semi carry independently
-    # auto-generated xarray dim names for their timepoint axis, so adding the
-    # xarray.DataArrays directly (before dropping to plain numpy) would
-    # broadcast them as an outer product instead of an elementwise sum.
-    hsgp_fit_vals = (
-        hsgp_idata["posterior"]["f_trend"].values
-        + hsgp_idata["posterior"]["f_semi"].values
-    ).reshape(-1, len(hsgp_hours)) * hsgp_level_std + hsgp_level_mean
-    hsgp_fit_mean = hsgp_fit_vals.mean(axis=0)
-    hsgp_fit_hdi = az.hdi(hsgp_fit_vals, prob=0.89, axis=0)
-    hsgp_fit_lo, hsgp_fit_hi = hsgp_fit_hdi[:, 0], hsgp_fit_hdi[:, 1]
+    _f_trend_posterior = hsgp_idata["posterior"]["f_trend"]
+    _f_trend_posterior = _f_trend_posterior.rename(
+        {_f_trend_posterior.dims[-1]: "hsgp_hour"}
+    ).assign_coords(hsgp_hour=hsgp_hours)
+    _f_semi_posterior = hsgp_idata["posterior"]["f_semi"]
+    _f_semi_posterior = _f_semi_posterior.rename(
+        {_f_semi_posterior.dims[-1]: "hsgp_hour"}
+    ).assign_coords(hsgp_hour=hsgp_hours)
+    hsgp_fit = (
+        _f_trend_posterior + _f_semi_posterior
+    ) * hsgp_level_std + hsgp_level_mean
+    hsgp_fit_mean = hsgp_fit.mean(dim=("chain", "draw"))
+    hsgp_fit_interval = eti(hsgp_fit)
+    hsgp_fit_lo = hsgp_fit_interval.sel(quantile=0.055)
+    hsgp_fit_hi = hsgp_fit_interval.sel(quantile=0.945)
 
     hsgp_fit_fig = go.Figure()
     hsgp_fit_fig.add_trace(
         go.Scatter(
             x=np.concatenate([hsgp_hours, hsgp_hours[::-1]]),
-            y=np.concatenate([hsgp_fit_hi, hsgp_fit_lo[::-1]]),
+            y=np.concatenate([hsgp_fit_hi.values, hsgp_fit_lo.values[::-1]]),
             fill="toself",
             fillcolor="rgba(21,74,114,0.25)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% HDI",
+            name="89% ETI",
         )
     )
     hsgp_fit_fig.add_trace(
@@ -1163,7 +1209,7 @@ def _(
     hsgp_fit_fig.add_trace(
         go.Scatter(
             x=hsgp_hours,
-            y=hsgp_fit_mean,
+            y=hsgp_fit_mean.values,
             mode="lines",
             name="posterior mean fit",
             line=dict(color=PYMC_BLUE, width=1),
@@ -1176,7 +1222,7 @@ def _(
         template="plotly_white",
     )
     hsgp_fit_fig
-    return (hsgp_fit_vals,)
+    return (hsgp_fit.stack(sample=("chain", "draw")).transpose("sample", "hsgp_hour").values,)
 
 
 @app.cell

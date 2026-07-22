@@ -61,6 +61,7 @@ def _(mo):
     import polars as pl
     import pymc as pm
     from plotly.subplots import make_subplots
+    import xarray as xr
     from scipy.stats import multivariate_normal, norm
 
     # PyMC brand colors, used throughout for consistency across notebooks.
@@ -92,6 +93,7 @@ def _(mo):
         az,
         data_dir,
         execute_models,
+        eti,
         go,
         inference_health,
         make_subplots,
@@ -100,7 +102,9 @@ def _(mo):
         np,
         pl,
         pm,
+        posterior_subset,
         results_dir,
+        xr,
         z,
     )
 
@@ -339,11 +343,21 @@ def _(pl, theoph, z):
 
 
 @app.cell
-def _(conc_vals, pm):
-    with pm.Model() as warmup_model:
+def _(conc_vals, np, pm):
+    _warmup_coords = {"observation": np.arange(len(conc_vals))}
+    with pm.Model(coords=_warmup_coords) as warmup_model:
+        _warmup_concentration_data = pm.Data(
+            "concentration_data", conc_vals, dims="observation"
+        )
         mu = pm.Normal("mu", mu=5, sigma=5)
         sigma = pm.HalfNormal("sigma", sigma=5)
-        pm.Normal("conc_obs", mu=mu, sigma=sigma, observed=conc_vals)
+        pm.Normal(
+            "conc_obs",
+            mu=mu,
+            sigma=sigma,
+            observed=_warmup_concentration_data,
+            dims="observation",
+        )
 
     warmup_model
     return (warmup_model,)
@@ -434,14 +448,11 @@ def _(mo):
     mo.md(r"""
     ### Sampling the posterior
 
-    Now we draw from the posterior with `pm.sample`. As of PyMC 6 the
-    sampler defaults to the fast Rust-based **nutpie** implementation of
-    the No-U-Turn Sampler automatically — you do **not** pass a
-    `nuts_sampler=` argument. We ask for `draws=1000` posterior samples
-    per chain after `tune=1000` warm-up steps, across `chains=2`
-    independent chains (running multiple chains is what lets us diagnose
-    convergence). Passing `random_seed=RANDOM_SEED` makes the run
-    reproducible.
+    Now we draw from the posterior with PyMC's default `pm.sample`
+    configuration. We ask for `draws=1000` posterior samples per chain
+    after `tune=1000` warm-up steps across `chains=4` independent chains;
+    multiple chains let us diagnose convergence. Passing
+    `random_seed=RANDOM_SEED` makes the run reproducible.
 
     `pm.sample` returns an **inference object** — an
     [ArviZ `DataTree`](https://python.arviz.org) — that bundles the
@@ -742,9 +753,14 @@ def _(mo):
 
 
 @app.cell
-def _(conc_z, pm, time_z):
-    t_lo, t_hi = float(time_z.min()), float(time_z.max())
-    with pm.Model() as pw_model:
+def _(conc_z, np, pm, time_z):
+    _pw_coords = {"observation": np.arange(len(conc_z))}
+    with pm.Model(coords=_pw_coords) as pw_model:
+        _pw_time_data = pm.Data("time", time_z, dims="observation")
+        _pw_concentration_data = pm.Data(
+            "concentration_data", conc_z, dims="observation"
+        )
+        t_lo, t_hi = float(time_z.min()), float(time_z.max())
         level = pm.Normal("level", mu=0, sigma=1)
         up = pm.HalfNormal("up", sigma=2)
         down = pm.Normal("down", mu=0, sigma=2)
@@ -753,9 +769,19 @@ def _(conc_z, pm, time_z):
 
         # Hinge / broken-stick mean function: slope is `up` before tau,
         # `up + down` after it. pm.math.maximum is the differentiable hinge.
-        mu_pw = level + up * time_z + down * pm.math.maximum(0.0, time_z - tau)
-        pm.Deterministic("mu_pw", mu_pw)
-        pm.Normal("conc_obs", mu=mu_pw, sigma=sigma_pw, observed=conc_z)
+        mu_pw = (
+            level
+            + up * _pw_time_data
+            + down * pm.math.maximum(0.0, _pw_time_data - tau)
+        )
+        pm.Deterministic("mu_pw", mu_pw, dims="observation")
+        pm.Normal(
+            "conc_obs",
+            mu=mu_pw,
+            sigma=sigma_pw,
+            observed=_pw_concentration_data,
+            dims="observation",
+        )
 
     pw_model
     return (pw_model,)
@@ -845,12 +871,12 @@ def _(mo):
     ### Sampling
 
     Five parameters (`level`, `up`, `down`, `tau`, `sigma_pw`) over 11
-    points. We use the standard `draws=1000, tune=1000, chains=2` and
-    nudge `target_accept` up to 0.9. The hinge introduces a *kink* in the
-    likelihood surface as a function of $\tau$ (the gradient of
-    $\max(0, t-\tau)$ jumps at each data point), which makes $\tau$
-    intrinsically harder to sample than a smooth parameter — a first
-    hint of the identifiability trouble we are about to diagnose.
+    points. We use `draws=1000, tune=1000, chains=4` with PyMC's default
+    sampler settings. The hinge introduces a *kink* in the likelihood
+    surface as a function of $\tau$ (the gradient of $\max(0, t-\tau)$
+    jumps at each data point), which makes $\tau$ intrinsically harder to
+    sample than a smooth parameter — a first hint of the identifiability
+    trouble we are about to diagnose.
     """)
     return
 
@@ -903,9 +929,8 @@ def _(mo, pw_n_div, pw_summary):
         `ess_bulk` is {float(pw_summary["ess_bulk"].min()):.0f}. The
         chains have converged well enough to interpret — but notice already
         in the table how *wide* the posterior for `tau` is relative to the
-        others (compare its `sd` and its `hdi_3%`–`hdi_97%` interval to
-        `level` or `up`). A converged fit can still be an inadequate one, as
-        the next plots make plain.
+        others (compare its `sd` and its 89% ETI to `level` or `up`). A
+        converged fit can still be an inadequate one, as the next plots make plain.
         """
     )
     return
@@ -915,7 +940,7 @@ def _(mo, pw_n_div, pw_summary):
 def _(
     PYMC_BLUE,
     PYMC_GREEN,
-    az,
+    eti,
     conc_mean,
     conc_std,
     conc_vals,
@@ -925,42 +950,43 @@ def _(
     time_mean,
     time_std,
     time_vals,
+    xr,
 ):
     # Reconstruct mu(t) on a fine grid for every posterior draw, in original units.
     _post = pw_idata["posterior"]
-    _level = _post["level"].values.ravel()
-    _up = _post["up"].values.ravel()
-    _down = _post["down"].values.ravel()
-    _tau = _post["tau"].values.ravel()
-
     time_grid = np.linspace(time_vals.min(), time_vals.max(), 200)
-    time_grid_z = (time_grid - time_mean) / time_std
-
-    _hinge = np.maximum(0.0, time_grid_z[None, :] - _tau[:, None])
-    _mu_z = (
-        _level[:, None] + _up[:, None] * time_grid_z[None, :] + _down[:, None] * _hinge
+    time_grid_z = xr.DataArray(
+        (time_grid - time_mean) / time_std,
+        dims="time_grid",
+        coords={"time_grid": time_grid},
     )
-    mu_orig = _mu_z * conc_std + conc_mean
+    _hinge = np.maximum(0.0, time_grid_z - _post["tau"])
+    mu_orig = (
+        _post["level"]
+        + _post["up"] * time_grid_z
+        + _post["down"] * _hinge
+    ) * conc_std + conc_mean
 
-    pw_fit_mean = mu_orig.mean(axis=0)
-    pw_fit_hdi = az.hdi(mu_orig, prob=0.89, axis=0)
-    pw_fit_lo, pw_fit_hi = pw_fit_hdi[:, 0], pw_fit_hdi[:, 1]
+    pw_fit_mean = mu_orig.mean(dim=("chain", "draw"))
+    pw_fit_interval = eti(mu_orig)
+    pw_fit_lo = pw_fit_interval.sel(quantile=0.055)
+    pw_fit_hi = pw_fit_interval.sel(quantile=0.945)
 
     pw_fit_fig = go.Figure()
     pw_fit_fig.add_trace(
         go.Scatter(
             x=np.concatenate([time_grid, time_grid[::-1]]),
-            y=np.concatenate([pw_fit_hi, pw_fit_lo[::-1]]),
+            y=np.concatenate([pw_fit_hi.values, pw_fit_lo.values[::-1]]),
             fill="toself",
             fillcolor="rgba(21,74,114,0.25)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% HDI",
+            name="89% ETI",
         )
     )
     pw_fit_fig.add_trace(
         go.Scatter(
             x=time_grid,
-            y=pw_fit_mean,
+            y=pw_fit_mean.values,
             mode="lines",
             name="posterior mean fit",
             line=dict(color=PYMC_GREEN, width=3),
@@ -1032,15 +1058,17 @@ def _(mo):
 
 
 @app.cell
-def _(PYMC_GREEN, go, np, pw_idata, time_mean, time_std):
+def _(PYMC_GREEN, eti, go, pw_idata, time_mean, time_std):
     # Convert the tau posterior back to hours to show how wide it is.
-    tau_hours = pw_idata["posterior"]["tau"].values.ravel() * time_std + time_mean
-    tau_lo, tau_hi = np.quantile(tau_hours, [0.055, 0.945])
+    tau_hours = pw_idata["posterior"]["tau"] * time_std + time_mean
+    tau_interval = eti(tau_hours)
+    tau_lo = float(tau_interval.sel(quantile=0.055))
+    tau_hi = float(tau_interval.sel(quantile=0.945))
 
     tau_fig = go.Figure()
     tau_fig.add_trace(
         go.Histogram(
-            x=tau_hours,
+            x=tau_hours.values.ravel(),
             histnorm="probability density",
             marker=dict(color=PYMC_GREEN),
             opacity=0.75,
@@ -1050,7 +1078,7 @@ def _(PYMC_GREEN, go, np, pw_idata, time_mean, time_std):
     tau_fig.add_vline(x=float(tau_lo), line=dict(color="black", dash="dash"))
     tau_fig.add_vline(x=float(tau_hi), line=dict(color="black", dash="dash"))
     tau_fig.update_layout(
-        title="Posterior of the peak time τ (hours) — dashed lines mark the 89% interval",
+        title="Posterior of the peak time τ (hours) — dashed lines mark the 89% ETI",
         xaxis_title="Estimated peak time τ (hours)",
         yaxis_title="density",
         template="plotly_white",
@@ -1163,17 +1191,16 @@ def _(mo):
                 would you conclude, and what would you try first?
 
                 **Solution.** The trouble is localized to `tau`: an `r_hat`
-                of 1.06 means the two chains have *not* agreed on its
-                distribution, an `ess_bulk` of 55 means you effectively have
-                only a few dozen independent draws of it, and 40 divergences
-                point to the sampler struggling with the kinked geometry the
-                hinge creates around the knot. You would *not* trust any
-                statement about the peak time from this run. First moves:
-                raise `target_accept` (e.g. to 0.95) to reduce divergences,
-                run longer chains, and — most tellingly — recognize that a
-                parameter this hard to sample is often a parameter the data
-                barely identify. That recurring difficulty is another nudge
-                toward the smoother, better-behaved GP formulation.
+                of 1.06 means the chains have not agreed on its distribution,
+                an `ess_bulk` of 55 means you effectively have only a few
+                dozen independent draws of it, and 40 divergences point to
+                the sampler struggling with the kinked geometry the data
+                barely identify. Do **not** make a peak-time statement from
+                this run. First inspect prior implications and the
+                identifiability of the knot and slopes; a parameter this hard
+                to sample is often a parameter the data barely identify. That
+                recurring difficulty is another nudge toward the smoother,
+                better-behaved GP formulation.
                 """
             )
         }
@@ -1604,12 +1631,14 @@ def _(
     expquad,
     go,
     gp_post_mean,
+    eti,
     np,
     time_grid,
     time_mean,
     time_std,
     time_vals,
     time_z,
+    xr,
 ):
     # Condition a zero-mean GP prior on subject 1's standardized data by hand.
     cond_ls, cond_eta, cond_noise = 0.6, 1.0, 0.25
@@ -1627,9 +1656,14 @@ def _(
     posterior_draws_z = np.random.default_rng(RANDOM_SEED).multivariate_normal(
         post_mean_z, post_cov + 1e-8 * np.eye(len(post_mean_z)), size=2_000
     )
-    gp_post_lo, gp_post_hi = np.quantile(posterior_draws_z, [0.055, 0.945], axis=0)
-    gp_post_lo = gp_post_lo * conc_std + conc_mean
-    gp_post_hi = gp_post_hi * conc_std + conc_mean
+    posterior_draws = xr.DataArray(
+        posterior_draws_z[None, :, :],
+        dims=("chain", "draw", "time_grid"),
+        coords={"chain": [0], "draw": np.arange(len(posterior_draws_z)), "time_grid": time_grid},
+    )
+    gp_post_interval = eti(posterior_draws) * conc_std + conc_mean
+    gp_post_lo = gp_post_interval.sel(quantile=0.055).values
+    gp_post_hi = gp_post_interval.sel(quantile=0.945).values
 
     gp_reg_fig = go.Figure()
     gp_reg_fig.add_trace(

@@ -83,11 +83,14 @@ def _(mo):
         az,
         data_dir,
         execute_models,
+        eti,
+        inference_health,
         go,
         np,
         perf_counter,
         pl,
         pm,
+        posterior_subset,
         results_dir,
         z,
     )
@@ -410,9 +413,20 @@ def _(pm, tide_hours_std):
 
 
 @app.cell
-def _(X_tide, gp_tide, sigma_tide, tide_model, y_tide):
+def _(X_tide, gp_tide, np, pm, sigma_tide, tide_model, y_tide):
     with tide_model:
-        gp_tide.marginal_likelihood("y", X=X_tide, y=y_tide, sigma=sigma_tide)
+        tide_model.add_coords(
+            {"observation": np.arange(len(y_tide)), "feature": ["time"]}
+        )
+        X_data = pm.Data("X", X_tide, dims=("observation", "feature"))
+        tide_level_data = pm.Data("tide_level", y_tide, dims="observation")
+        gp_tide.marginal_likelihood(
+            "y",
+            X=X_data,
+            y=tide_level_data,
+            sigma=sigma_tide,
+            dims="observation",
+        )
     return
 
 
@@ -585,7 +599,7 @@ def _(RANDOM_SEED, pm, tide_idata, tide_model):
 @app.cell
 def _(
     PYMC_BLUE,
-    az,
+    eti,
     go,
     np,
     tide_hours,
@@ -594,32 +608,31 @@ def _(
     tide_level_std,
     tide_ppc,
 ):
-    tide_fit_vals = (
-        tide_ppc["posterior_predictive"]["f_tide_pred"].values.reshape(
-            -1, len(tide_hours)
-        )
-        * tide_level_std
-        + tide_level_mean
+    tide_fit = tide_ppc["posterior_predictive"]["f_tide_pred"]
+    tide_fit = tide_fit.rename({tide_fit.dims[-1]: "tide_hour"}).assign_coords(
+        tide_hour=tide_hours
     )
-    tide_fit_mean = tide_fit_vals.mean(axis=0)
-    tide_fit_hdi = az.hdi(tide_fit_vals, prob=0.89, axis=0)
-    tide_fit_lo, tide_fit_hi = tide_fit_hdi[:, 0], tide_fit_hdi[:, 1]
+    tide_fit = tide_fit * tide_level_std + tide_level_mean
+    tide_fit_mean = tide_fit.mean(dim=("chain", "draw"))
+    tide_fit_interval = eti(tide_fit)
+    tide_fit_lo = tide_fit_interval.sel(quantile=0.055)
+    tide_fit_hi = tide_fit_interval.sel(quantile=0.945)
 
     tide_fit_fig = go.Figure()
     tide_fit_fig.add_trace(
         go.Scatter(
             x=np.concatenate([tide_hours, tide_hours[::-1]]),
-            y=np.concatenate([tide_fit_hi, tide_fit_lo[::-1]]),
+            y=np.concatenate([tide_fit_hi.values, tide_fit_lo.values[::-1]]),
             fill="toself",
             fillcolor="rgba(21,74,114,0.25)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% HDI",
+            name="89% ETI",
         )
     )
     tide_fit_fig.add_trace(
         go.Scatter(
             x=tide_hours,
-            y=tide_fit_mean,
+            y=tide_fit_mean.values,
             mode="lines",
             name="posterior mean fit",
             line=dict(color=PYMC_BLUE, width=2),
@@ -808,15 +821,29 @@ def _(mo):
 
 
 @app.cell
-def _(X_places, pm, y_places):
-    with pm.Model() as places_model:
+def _(X_places, np, pm, y_places):
+    coords = {
+        "county": np.arange(len(y_places)),
+        "coordinate": ["longitude", "latitude"],
+    }
+    with pm.Model(coords=coords) as places_model:
+        county_locations = pm.Data(
+            "county_locations", X_places, dims=("county", "coordinate")
+        )
+        diabetes_data = pm.Data("diabetes", y_places, dims="county")
         ell_places = pm.InverseGamma("ell", alpha=5, beta=5, shape=2)  # ARD: (lon, lat)
         eta_places = pm.HalfNormal("eta", sigma=2)
         cov_places = eta_places**2 * pm.gp.cov.Matern52(2, ls=ell_places)
         sigma_places = pm.HalfNormal("sigma_places", sigma=1)
 
         gp_places = pm.gp.Marginal(cov_func=cov_places)
-        gp_places.marginal_likelihood("y", X=X_places, y=y_places, sigma=sigma_places)
+        gp_places.marginal_likelihood(
+            "y",
+            X=county_locations,
+            y=diabetes_data,
+            sigma=sigma_places,
+            dims="county",
+        )
     return gp_places, places_model
 
 
@@ -1273,12 +1300,13 @@ def _(day_z, np, pitcher_idx_num, pitchers, pm, spin_z):
     with pm.Model(coords=spin_coords) as spin_model:
         day_data = pm.Data("day", day_z, dims="obs")
         pitcher_data = pm.Data("pitcher_idx", pitcher_idx_num, dims="obs")
+        spin_data = pm.Data("spin_rate", spin_z, dims="obs")
 
         ell_pop = pm.InverseGamma("ell_pop", alpha=5, beta=5)
         eta_pop = pm.HalfNormal("eta_pop", sigma=1)
         cov_pop = eta_pop**2 * pm.gp.cov.Matern52(1, ls=ell_pop)
         gp_pop = pm.gp.Latent(cov_func=cov_pop)
-        f_pop = gp_pop.prior("f_pop", X=day_data[:, None])
+        f_pop = gp_pop.prior("f_pop", X=day_data[:, None], dims="obs")
 
         sigma_dev = pm.HalfNormal("sigma_dev", sigma=0.5)  # small deviation amplitude
         offset = pm.Normal("offset", 0, 1, dims="pitcher")  # non-centered
@@ -1286,7 +1314,9 @@ def _(day_z, np, pitcher_idx_num, pitchers, pm, spin_z):
 
         mu = f_pop + dev[pitcher_data]
         sigma_obs = pm.HalfNormal("sigma_obs", sigma=0.5)
-        pm.Normal("spin_obs", mu=mu, sigma=sigma_obs, observed=spin_z, dims="obs")
+        pm.Normal(
+            "spin_obs", mu=mu, sigma=sigma_obs, observed=spin_data, dims="obs"
+        )
     return gp_pop, spin_model
 
 
@@ -1368,14 +1398,12 @@ def _(mo):
     ### Sampling
 
     Only 30 observations, but the non-centered hierarchy over a latent
-    GP has a mildly delicate funnel geometry, so we raise
-    `target_accept` well above the 0.8 default (0.99, found by
-    checking for divergences) rather than the more typical 0.9, and use
-    more draws than the `1000` default to comfortably clear
-    `ess_bulk > 400` on the **full posterior** — every hyperparameter,
+    GP can still have delicate geometry. We use the default PyMC sampler
+    settings and assess all free variables — every hyperparameter,
     the per-pitcher deviations, and the latent GP itself
-    (`f_pop`/`f_pop_rotated_`, its highest-dimensional and most
-    funnel-prone component) — not just a convenient subset.
+    (`f_pop`/`f_pop_rotated_`, its highest-dimensional component) — with
+    divergences, R-hat, and effective sample sizes rather than relying on
+    a tuning override.
     """)
     return
 
@@ -1488,7 +1516,7 @@ def _(RANDOM_SEED, pm, spin_idata, spin_model):
 
 @app.cell
 def _(
-    az,
+    eti,
     day_of_season,
     go,
     np,
@@ -1502,10 +1530,11 @@ def _(
     spin_vals,
 ):
     _grid_n = len(spin_day_grid)
-    f_pop_grid_samples = spin_grid_ppc["posterior_predictive"][
-        "f_pop_grid"
-    ].values.reshape(-1, _grid_n)
-    dev_samples = spin_idata["posterior"]["dev"].values.reshape(-1, len(pitchers))
+    f_pop_grid_samples = spin_grid_ppc["posterior_predictive"]["f_pop_grid"]
+    f_pop_grid_samples = f_pop_grid_samples.rename(
+        {f_pop_grid_samples.dims[-1]: "day"}
+    ).assign_coords(day=spin_day_grid)
+    dev_samples = spin_idata["posterior"]["dev"]
 
     spin_traj_fig = go.Figure()
     _colors = ["#154A72", "#81C240", "#4A9EDE"]
@@ -1516,14 +1545,16 @@ def _(
     ]
     for _i, _pitcher in enumerate(pitchers):
         _combined = (
-            f_pop_grid_samples + dev_samples[:, _i][:, None]
+            f_pop_grid_samples + dev_samples.isel(pitcher=_i)
         ) * spin_std + spin_mean
-        _mean_traj = _combined.mean(axis=0)
-        _hdi = az.hdi(_combined, prob=0.89, axis=0)
+        _mean_traj = _combined.mean(dim=("chain", "draw"))
+        _interval = eti(_combined)
+        _lo = _interval.sel(quantile=0.055)
+        _hi = _interval.sel(quantile=0.945)
         spin_traj_fig.add_trace(
             go.Scatter(
                 x=np.concatenate([spin_day_grid, spin_day_grid[::-1]]),
-                y=np.concatenate([_hdi[:, 1], _hdi[:, 0][::-1]]),
+                y=np.concatenate([_hi.values, _lo.values[::-1]]),
                 fill="toself",
                 fillcolor=_fill_colors[_i],
                 line=dict(color="rgba(255,255,255,0)"),
@@ -1533,7 +1564,7 @@ def _(
         spin_traj_fig.add_trace(
             go.Scatter(
                 x=spin_day_grid,
-                y=_mean_traj,
+                y=_mean_traj.values,
                 mode="lines",
                 name=f"{_pitcher} (posterior mean)",
                 line=dict(color=_colors[_i], width=3),
