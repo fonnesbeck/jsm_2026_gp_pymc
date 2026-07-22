@@ -69,6 +69,7 @@ def _(mo):
     import plotly.graph_objects as go
     import polars as pl
     import pymc as pm
+    import pytensor.tensor as pt
 
     # PyMC brand colors, used throughout for consistency across notebooks.
     PYMC_BLUE = "#154A72"
@@ -106,6 +107,7 @@ def _(mo):
         perf_counter,
         pl,
         pm,
+        pt,
         posterior_subset,
         results_dir,
         sample_fresh_model_predictions,
@@ -415,14 +417,14 @@ def _(X_tide, np, pm, tide_hours_std, y_tide):
         with pm.Model(coords=_coords) as tide_model:
             _X_data = pm.Data("X", X_tide, dims=("observation", "feature"))
             _tide_level_data = pm.Data("tide_level", y_tide, dims="observation")
-            _ell_trend = pm.InverseGamma("ell_trend", alpha=5, beta=5)
+            _ell_trend = pm.LogNormal("ell_trend", mu=0, sigma=1)
             _eta_trend = pm.HalfNormal("eta_trend", sigma=1)
             _cov_trend = _eta_trend**2 * pm.gp.cov.Matern52(1, ls=_ell_trend)
             _eta_semi = pm.HalfNormal("eta_semi", sigma=1)
             _cov_semi = _eta_semi**2 * pm.gp.cov.Periodic(
                 1, period=_semi_period_std, ls=0.5
             )
-            _eta_diurnal = pm.HalfNormal("eta_diurnal", sigma=1)
+            _eta_diurnal = pm.HalfNormal("eta_diurnal", sigma=0.5)
             _cov_diurnal = _eta_diurnal**2 * pm.gp.cov.Periodic(
                 1, period=_diurnal_period_std, ls=0.5
             )
@@ -467,17 +469,17 @@ def _(RANDOM_SEED, pm, tide_model):
 
 @app.cell
 def _(PYMC_LIGHT_BLUE, X_tide, go, np, tide_prior_pred, y_tide):
-    tide_prior_draws = tide_prior_pred["prior_predictive"]["y"].values.reshape(
-        -1, len(y_tide)
-    )
+    tide_prior_draws = tide_prior_pred["prior_predictive"]["y"].stack(
+        sample=("chain", "draw")
+    ).transpose("sample", "observation")
 
     tide_prior_fig = go.Figure()
     rng_plot_tide = np.random.default_rng(0)
-    for _i in rng_plot_tide.choice(tide_prior_draws.shape[0], size=50, replace=False):
+    for _i in rng_plot_tide.choice(tide_prior_draws.sizes["sample"], size=50, replace=False):
         tide_prior_fig.add_trace(
             go.Scatter(
                 x=X_tide[:, 0],
-                y=tide_prior_draws[_i],
+                y=tide_prior_draws.isel(sample=_i).values,
                 mode="lines",
                 line=dict(color=PYMC_LIGHT_BLUE, width=1),
                 opacity=0.2,
@@ -494,7 +496,7 @@ def _(PYMC_LIGHT_BLUE, X_tide, go, np, tide_prior_pred, y_tide):
         )
     )
     tide_prior_fig.update_layout(
-        title="Prior predictive draws vs. standardized observed tide level",
+        title="Noisy prior-predictive tide observations vs. data",
         xaxis_title="time (standardized)",
         yaxis_title="water level (standardized)",
         template="plotly_white",
@@ -548,9 +550,12 @@ def _(
     tide_model,
 ):
     mo.stop(not (tide_fit_button.value or execute_models))
+    tide_model.compile_logp()(tide_model.initial_point())
     with tide_model:
         tide_start = perf_counter()
-        tide_idata = pm.sample(chains=4, random_seed=RANDOM_SEED)
+        tide_idata = pm.sample(
+            draws=500, tune=500, chains=4, random_seed=RANDOM_SEED
+        )
         tide_sample_seconds = perf_counter() - tide_start
     tide_idata.to_netcdf(results_dir / "03_tide_exact_gp.nc")
     print(f"NOAA additive-GP sampling wall-time: {tide_sample_seconds:.1f}s")
@@ -621,6 +626,43 @@ def _(
         random_seed=RANDOM_SEED,
     )
     return (tide_ppc,)
+
+
+@app.cell
+def _(
+    RANDOM_SEED,
+    build_tide_model,
+    pm,
+    posterior_subset,
+    tide_idata,
+):
+    tide_observed_model = build_tide_model()
+    with tide_observed_model:
+        tide_observed_ppc = pm.sample_posterior_predictive(
+            posterior_subset(tide_idata),
+            var_names=["y"],
+            random_seed=RANDOM_SEED,
+        )
+    return (tide_observed_ppc,)
+
+
+@app.cell
+def _(tide_observed_ppc, y_tide):
+    tide_replicated = tide_observed_ppc["posterior_predictive"]["y"]
+    tide_ppc_location = tide_replicated.mean(dim="observation")
+    tide_ppc_spread = tide_replicated.std(dim="observation")
+    tide_observed_location = float(y_tide.mean())
+    tide_observed_spread = float(y_tide.std(ddof=0))
+    {
+        "observed_mean": tide_observed_location,
+        "predictive_mean_eti": tide_ppc_location.quantile(
+            [0.055, 0.945], dim=("chain", "draw")
+        ),
+        "observed_sd": tide_observed_spread,
+        "predictive_sd_eti": tide_ppc_spread.quantile(
+            [0.055, 0.945], dim=("chain", "draw")
+        ),
+    }
 
 
 @app.cell
@@ -770,27 +812,31 @@ def _(np, places, z):
     places_lon = places["lon"].to_numpy()
     places_lat = places["lat"].to_numpy()
     places_diabetes = places["diabetes_pct"].to_numpy()
+    places_obesity_z = z(places["obesity_pct"].to_numpy())
 
-    places_lon_mean, places_lon_std = places_lon.mean(), places_lon.std(ddof=0)
-    places_lat_mean, places_lat_std = places_lat.mean(), places_lat.std(ddof=0)
+    # A local equirectangular plane gives both ARD axes the unit kilometres.
+    _latitude_origin = places_lat.mean()
+    east_km = (
+        (places_lon - places_lon.mean())
+        * 111.320
+        * np.cos(np.deg2rad(_latitude_origin))
+    )
+    north_km = (places_lat - _latitude_origin) * 110.574
     places_diabetes_mean = places_diabetes.mean()
     places_diabetes_std = places_diabetes.std(ddof=0)
 
-    X_places = np.column_stack(
-        [z(places_lon), z(places_lat)]
-    )  # GP inputs are 2D: (n, 2)
+    X_places = np.column_stack([east_km, north_km, places_obesity_z])
     y_places = z(places_diabetes)
     return (
         X_places,
+        east_km,
+        north_km,
         places_diabetes,
         places_diabetes_mean,
         places_diabetes_std,
         places_lat,
-        places_lat_mean,
-        places_lat_std,
         places_lon,
-        places_lon_mean,
-        places_lon_std,
+        places_obesity_z,
         y_places,
     )
 
@@ -849,40 +895,48 @@ def _(mo):
 def _(X_places, np, pm, y_places):
     _places_coords = {
         "county": np.arange(len(y_places)),
-        "coordinate": ["longitude", "latitude"],
+        "input": ["east_km", "north_km", "obesity_z"],
+        "axis": ["east_km", "north_km"],
     }
 
     def build_places_model(X_pred=None):
+        """Build the covariate-adjusted spatial GP on its kilometre plane."""
         _coords = dict(_places_coords)
         if X_pred is not None:
             _coords["prediction"] = np.arange(len(X_pred))
         with pm.Model(coords=_coords) as places_model:
-            _county_locations = pm.Data(
-                "county_locations", X_places, dims=("county", "coordinate")
+            _county_inputs = pm.Data(
+                "county_inputs", X_places, dims=("county", "input")
             )
             _diabetes_data = pm.Data("diabetes", y_places, dims="county")
-            _ell_places = pm.InverseGamma("ell", alpha=5, beta=5, shape=2)
-            _eta_places = pm.HalfNormal("eta", sigma=2)
-            _sigma_places = pm.HalfNormal("sigma_places", sigma=1)
+            _alpha = pm.Normal("alpha", mu=0, sigma=1)
+            _beta_obesity = pm.Normal("beta_obesity", mu=0, sigma=1)
+            _ell_axis = pm.LogNormal(
+                "ell_axis", mu=np.log(150), sigma=0.5, dims="axis"
+            )
+            _eta = pm.HalfNormal("eta", sigma=1)
+            _sigma = pm.HalfNormal("sigma", sigma=0.5)
+            _mean = pm.gp.mean.Linear(
+                coeffs=[0, 0, _beta_obesity], intercept=_alpha
+            )
             _gp_places = pm.gp.Marginal(
-                cov_func=_eta_places**2
-                * pm.gp.cov.Matern52(2, ls=_ell_places)
+                mean_func=_mean,
+                cov_func=_eta**2
+                * pm.gp.cov.Matern52(3, active_dims=[0, 1], ls=_ell_axis),
             )
             _gp_places.marginal_likelihood(
                 "y",
-                X=_county_locations,
+                X=_county_inputs,
                 y=_diabetes_data,
-                sigma=_sigma_places,
+                sigma=_sigma,
                 dims="county",
             )
             if X_pred is not None:
-                _county_prediction_locations = pm.Data(
-                    "prediction_locations",
-                    X_pred,
-                    dims=("prediction", "coordinate"),
+                _prediction_inputs = pm.Data(
+                    "prediction_inputs", X_pred, dims=("prediction", "input")
                 )
                 _gp_places.conditional(
-                    "f_grid", _county_prediction_locations, dims="prediction"
+                    "f_grid", _prediction_inputs, dims="prediction"
                 )
         return places_model
 
@@ -908,10 +962,10 @@ def _(RANDOM_SEED, places_model, pm):
 
 
 @app.cell
-def _(places_prior_pred, y_places):
-    places_prior_draws = places_prior_pred["prior_predictive"]["y"].values.reshape(
-        -1, len(y_places)
-    )
+def _(places_prior_pred):
+    places_prior_draws = places_prior_pred["prior_predictive"]["y"].stack(
+        sample=("chain", "draw")
+    ).transpose("sample", "county")
     return (places_prior_draws,)
 
 
@@ -921,12 +975,12 @@ def _(PYMC_LIGHT_BLUE, go, np, places_prior_draws, y_places):
     rng_plot_places = np.random.default_rng(0)
     # Markers, not lines: county index has no natural ordering, unlike the time series elsewhere.
     for _i in rng_plot_places.choice(
-        places_prior_draws.shape[0], size=50, replace=False
+        places_prior_draws.sizes["sample"], size=50, replace=False
     ):
         places_prior_fig.add_trace(
             go.Scatter(
                 x=np.arange(len(y_places)),
-                y=places_prior_draws[_i],
+                y=places_prior_draws.isel(sample=_i).values,
                 mode="markers",
                 marker=dict(color=PYMC_LIGHT_BLUE, size=4),
                 opacity=0.15,
@@ -998,9 +1052,18 @@ def _(
     results_dir,
 ):
     mo.stop(not (places_fit_button.value or execute_models))
+    places_model.compile_logp()(places_model.initial_point())
     with places_model:
         places_start = perf_counter()
-        places_idata = pm.sample(chains=4, random_seed=RANDOM_SEED)
+        # A 500-draw diagnostic run exposed one divergence; the minimum
+        # 0.90 acceptance threshold removes it without changing samplers.
+        places_idata = pm.sample(
+            draws=500,
+            tune=500,
+            chains=4,
+            target_accept=0.9,
+            random_seed=RANDOM_SEED,
+        )
         places_sample_seconds = perf_counter() - places_start
     places_idata.to_netcdf(results_dir / "03_places_spatial_gp.nc")
     print(f"PLACES ARD-GP sampling wall-time: {places_sample_seconds:.1f}s")
@@ -1055,12 +1118,65 @@ def _(
         threshold — and maximum `r_hat` is {places_max_rhat:.3f}. Health gate
         passed: **{places_health_passed}**.
 
-        The two ARD lengthscales (see table above, `ell[0]` = longitude,
-        `ell[1]` = latitude) need not agree — if their posteriors are well
-        separated, that's evidence the surface really is anisotropic.
+        Directional structure is reported below as the full posterior
+        contrast between kilometre-scale east-west and north-south
+        lengthscales, rather than a posterior-mean-only anisotropy claim.
         """
     )
     return
+
+
+@app.cell
+def _(eti_bounds, places_idata):
+    places_ell = places_idata["posterior"]["ell_axis"]
+    places_directional_contrast = (
+        places_ell.sel(axis="east_km") - places_ell.sel(axis="north_km")
+    )
+    places_contrast_lo, places_contrast_hi = eti_bounds(places_directional_contrast)
+    places_directional_summary = {
+        "P(east-west lengthscale > north-south lengthscale)": float(
+            (places_directional_contrast > 0).mean(dim=("chain", "draw"))
+        ),
+        "89% ETI (km)": (
+            float(places_contrast_lo),
+            float(places_contrast_hi),
+        ),
+    }
+    places_directional_summary
+    return (places_directional_summary,)
+
+
+@app.cell
+def _(
+    RANDOM_SEED,
+    build_places_model,
+    pm,
+    places_idata,
+    posterior_subset,
+):
+    places_observed_model = build_places_model()
+    with places_observed_model:
+        places_observed_ppc = pm.sample_posterior_predictive(
+            posterior_subset(places_idata),
+            var_names=["y"],
+            random_seed=RANDOM_SEED,
+        )
+    return (places_observed_ppc,)
+
+
+@app.cell
+def _(places_observed_ppc, y_places):
+    places_replicated = places_observed_ppc["posterior_predictive"]["y"]
+    {
+        "observed_mean": float(y_places.mean()),
+        "predictive_mean_eti": places_replicated.mean(dim="county").quantile(
+            [0.055, 0.945], dim=("chain", "draw")
+        ),
+        "observed_sd": float(y_places.std(ddof=0)),
+        "predictive_sd_eti": places_replicated.std(dim="county").quantile(
+            [0.055, 0.945], dim=("chain", "draw")
+        ),
+    }
 
 
 @app.cell(hide_code=True)
@@ -1082,26 +1198,21 @@ def _(mo):
 
 
 @app.cell
-def _(
-    np,
-    places_lat,
-    places_lat_mean,
-    places_lat_std,
-    places_lon,
-    places_lon_mean,
-    places_lon_std,
-):
+def _(east_km, north_km, np):
+    from scipy.spatial import Delaunay
+
     grid_n = 20
-    lon_grid = np.linspace(places_lon.min(), places_lon.max(), grid_n)
-    lat_grid = np.linspace(places_lat.min(), places_lat.max(), grid_n)
-    LON_MESH, LAT_MESH = np.meshgrid(lon_grid, lat_grid)
-    X_grid = np.column_stack(
-        [
-            (LON_MESH.ravel() - places_lon_mean) / places_lon_std,
-            (LAT_MESH.ravel() - places_lat_mean) / places_lat_std,
-        ]
-    )
-    return LAT_MESH, LON_MESH, X_grid, grid_n
+    east_grid = np.linspace(east_km.min(), east_km.max(), grid_n)
+    north_grid = np.linspace(north_km.min(), north_km.max(), grid_n)
+    EAST_MESH, NORTH_MESH = np.meshgrid(east_grid, north_grid)
+    spatial_grid = np.column_stack([EAST_MESH.ravel(), NORTH_MESH.ravel()])
+    in_hull = Delaunay(np.column_stack([east_km, north_km])).find_simplex(
+        spatial_grid
+    ) >= 0
+    # Zero is average obesity on the standardized covariate scale.
+    X_grid = np.column_stack([spatial_grid, np.zeros(len(spatial_grid))])
+    in_hull_grid = in_hull.reshape(grid_n, grid_n)
+    return EAST_MESH, NORTH_MESH, X_grid, grid_n, in_hull_grid
 
 
 @app.cell
@@ -1123,37 +1234,42 @@ def _(
 
 @app.cell
 def _(
-    LAT_MESH,
-    LON_MESH,
+    EAST_MESH,
+    NORTH_MESH,
     PYMC_BLUE,
     go,
     grid_n,
+    in_hull_grid,
     places,
     places_diabetes,
     places_diabetes_mean,
     places_diabetes_std,
     places_grid_ppc,
-    places_lat,
-    places_lon,
+    east_km,
+    north_km,
 ):
-    grid_mu = (
-        places_grid_ppc["predictions"]["f_grid"]
-        .mean(dim=["chain", "draw"])
-        .values
+    grid_mean = places_grid_ppc["predictions"]["f_grid"].mean(
+        dim=("chain", "draw")
     )
-    grid_diabetes = (grid_mu * places_diabetes_std + places_diabetes_mean).reshape(
-        grid_n, grid_n
+    grid_diabetes = grid_mean * places_diabetes_std + places_diabetes_mean
+    grid_diabetes_2d = (
+        grid_diabetes.assign_coords(
+            east_km=("prediction", EAST_MESH.ravel()),
+            north_km=("prediction", NORTH_MESH.ravel()),
+        )
+        .set_index(prediction=("north_km", "east_km"))
+        .unstack("prediction")
+        .where(in_hull_grid)
     )
-    # Shared color scale so the heatmap and county markers are directly comparable.
-    diabetes_cmin = min(grid_diabetes.min(), places_diabetes.min())
-    diabetes_cmax = max(grid_diabetes.max(), places_diabetes.max())
+    diabetes_cmin = min(float(grid_diabetes_2d.min()), float(places_diabetes.min()))
+    diabetes_cmax = max(float(grid_diabetes_2d.max()), float(places_diabetes.max()))
 
     heatmap_fig = go.Figure()
     heatmap_fig.add_trace(
         go.Heatmap(
-            x=LON_MESH[0],
-            y=LAT_MESH[:, 0],
-            z=grid_diabetes,
+            x=grid_diabetes_2d["east_km"].values,
+            y=grid_diabetes_2d["north_km"].values,
+            z=grid_diabetes_2d.values,
             colorscale="Blues",
             zmin=diabetes_cmin,
             zmax=diabetes_cmax,
@@ -1162,8 +1278,8 @@ def _(
     )
     heatmap_fig.add_trace(
         go.Scatter(
-            x=places_lon,
-            y=places_lat,
+            x=east_km,
+            y=north_km,
             mode="markers",
             marker=dict(
                 size=7,
@@ -1176,13 +1292,16 @@ def _(
             ),
             text=places["county"].to_list(),
             hovertemplate="%{text}: %{marker.color:.1f}%<extra></extra>",
-            name="counties",
+            name="county centroids",
         )
     )
     heatmap_fig.update_layout(
-        title="Predicted diabetes prevalence surface (ARD Matern52 GP) + county centroids",
-        xaxis_title="Longitude",
-        yaxis_title="Latitude",
+        title=(
+            "Average-obesity conditional interpolation within the county "
+            "convex hull"
+        ),
+        xaxis_title="Local east coordinate (km)",
+        yaxis_title="Local north coordinate (km)",
         template="plotly_white",
     )
     heatmap_fig
@@ -1192,22 +1311,18 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    The predicted surface smoothly interpolates between county
-    centroids, higher in some regions and lower in others, reflecting
-    the spatial correlation the ARD kernel learned along longitude and
-    latitude separately. Treat this surface with the same caution as
-    the underlying PLACES estimates themselves: it is a smoothed
-    *model* of model-based estimates, useful for visualizing broad
-    spatial pattern, not a substitute for a county-level measurement.
+    The masked surface is an interpolation of model-based PLACES estimates
+    at average obesity within the observed county-centroid convex hull. It is
+    not a map of county measurements, and it deliberately does not extrapolate
+    outside the observed geometry.
 
     ### Exercise: try an isotropic (non-ARD) kernel
 
-    Refit with a single scalar lengthscale (`pm.gp.cov.Matern52(2,
-    ls=ell)` with `ell` a scalar, rather than `shape=2`) instead of the
-    ARD vector. Compare the fitted surface — does forcing lon and lat to
-    share one lengthscale visibly change the shape of the predicted
-    surface, or do the two ARD lengthscales turn out to be similar
-    enough that it barely matters? Expand for a discussion.
+    Refit with a single kilometre-scale lengthscale
+    (`pm.gp.cov.Matern52(2, ls=ell_iso)` with `ell_iso` scalar) rather
+    than the ARD vector. Compare the fitted surface and the posterior
+    directional contrast: does forcing east/north to share one scale
+    materially change the in-hull interpolation?
     """)
     return
 
@@ -1219,21 +1334,15 @@ def _(mo):
             "Discussion": mo.md(
                 """
                 ```python
-                ell_iso = pm.InverseGamma("ell_iso", alpha=5, beta=5)  # scalar, not shape=2
+                ell_iso = pm.LogNormal("ell_iso", mu=np.log(150), sigma=0.5)
                 cov_iso = eta**2 * pm.gp.cov.Matern52(2, ls=ell_iso)
                 ```
 
-                Look back at the ARD posterior summary table above: if
-                `ell[0]` (longitude) and `ell[1]` (latitude) have
-                overlapping credible intervals, an isotropic fit will look
-                nearly identical to the ARD one — the extra flexibility
-                wasn't needed. If they are well separated, the isotropic
-                fit is forced to compromise between the two true
-                length-scales, which shows up as a surface that is either
-                too smooth in the fast-varying direction or too wiggly in
-                the slow-varying one. ARD costs one extra parameter; it is
-                usually worth fitting first and checking whether the
-                lengthscales actually differ before simplifying.
+                Compare the scalar kilometre lengthscale with the ARD
+                posterior's directional contrast and its 89% ETI. If that
+                contrast is concentrated near zero, the isotropic surface
+                may be a useful simpler description. If not, an isotropic
+                fit must compromise between the two directional scales.
                 """
             )
         }
@@ -1248,12 +1357,10 @@ def _(mo):
 
     ### Background
 
-    Statcast fastball spin rate (rpm) for 3 MLB pitchers, 10 games each
-    over the 2021 season. Spin rate drifts gradually over a season for
-    physiological and mechanical reasons, but each pitcher has their
-    own characteristic average level. We want to borrow strength across
-    pitchers for the *shape* of the within-season drift, while still
-    letting each pitcher have their own baseline.
+    Statcast fastball spin-rate (rpm) game means for three MLB pitchers,
+    ten games each during **April–May 2021**. The 30 observations occupy a
+    common grid of 24 dates. We model population time structure while
+    retaining pitcher baselines and pitcher-specific functional departures.
     """)
     return
 
@@ -1265,7 +1372,6 @@ def _(data_dir, pl):
     spin.head()
     return (spin,)
 
-
 @app.cell
 def _(np, spin, z):
     pitchers = spin["pitcher"].unique(maintain_order=True).sort().to_list()
@@ -1276,17 +1382,26 @@ def _(np, spin, z):
     day_of_season = (
         (spin["game_date"] - season_start).dt.total_days().to_numpy().astype(float)
     )
+    day_grid = np.unique(day_of_season)
     day_mean, day_std = day_of_season.mean(), day_of_season.std(ddof=0)
     day_z = z(day_of_season)
+    day_grid_z = (day_grid - day_mean) / day_std
+    date_map = {day: i for i, day in enumerate(day_grid)}
+    date_idx = np.array([date_map[day] for day in day_of_season])
 
     spin_vals = spin["spin_rate"].to_numpy()
+    n_pitches = spin["n_pitches"].to_numpy().astype(float)
     spin_mean, spin_std = spin_vals.mean(), spin_vals.std(ddof=0)
     spin_z = z(spin_vals)
     return (
+        date_idx,
+        day_grid,
+        day_grid_z,
         day_mean,
         day_of_season,
         day_std,
         day_z,
+        n_pitches,
         pitcher_idx_num,
         pitchers,
         spin_mean,
@@ -1327,65 +1442,107 @@ def _(mo):
     mo.md(r"""
     ### Partial pooling
 
-    Two extremes: fit each pitcher's trend **completely separately**
-    (no pooling — noisy with only 10 games each) or fit **one shared**
-    trend and ignore that pitchers differ (complete pooling — ignores
-    real between-pitcher variation). A hierarchical model does neither:
-    it puts a single shared population-level GP trend $f_{\text{pop}}$
-    over day-of-season, and gives every pitcher a **small, partially
-    pooled deviation** from it,
-    $\text{dev}_i \sim \mathcal{N}(0, \sigma_{\text{dev}}^2)$, estimated
-    jointly with everything else. $\sigma_{\text{dev}}$ itself is
-    learned from the data: if pitchers turn out to be very similar, it
-    shrinks toward zero and pools hard; if they are genuinely
-    different, it grows and pools less. As in earlier hierarchical
-    models, we use the **non-centered** parameterization
-    (`offset ~ Normal(0, 1)`, `dev = sigma_dev * offset`) to avoid the
-    funnel geometry that a centered hierarchical GP is prone to.
+    A population intercept and a sum-to-zero, non-centered pitcher-intercept
+    hierarchy separate level differences from time structure. A mean-centered
+    population GP captures shared day-to-day movement. Each pitcher then gets
+    a two-way-centered GP deviation: it cannot absorb the population trajectory
+    or a pitcher intercept, but can represent a different functional shape.
+    Observation noise is scaled by $1/\sqrt{n_{\mathrm{pitches}}/\bar n}$,
+    treating game means based on more pitches as more precise under an
+    effective-sample-size assumption.
     """)
     return
-
-
 @app.cell
-def _(day_z, np, pitcher_idx_num, pitchers, pm, spin_z):
-    _spin_coords = {"pitcher": pitchers, "obs": np.arange(len(spin_z))}
+def _(
+    date_idx,
+    day_grid,
+    day_grid_z,
+    n_pitches,
+    np,
+    pitcher_idx_num,
+    pitchers,
+    pm,
+    pt,
+    spin_z,
+):
+    _spin_coords = {
+        "pitcher": pitchers,
+        "day": day_grid,
+        "feature": ["standardized_day"],
+        "observation": np.arange(len(spin_z)),
+    }
 
-    def build_spin_model(day_grid_z=None):
-        _coords = dict(_spin_coords)
-        if day_grid_z is not None:
-            _coords["prediction"] = np.arange(len(day_grid_z))
-        with pm.Model(coords=_coords) as spin_model:
-            _day_data = pm.Data("day", day_z, dims="obs")
-            _pitcher_data = pm.Data("pitcher_idx", pitcher_idx_num, dims="obs")
-            _spin_data = pm.Data("spin_rate", spin_z, dims="obs")
-            _ell_pop = pm.InverseGamma("ell_pop", alpha=5, beta=5)
+    def build_spin_model():
+        """Build the identifiable population-plus-functional-deviation GP."""
+        with pm.Model(coords=_spin_coords) as spin_model:
+            _day_grid_data = pm.Data(
+                "day_grid", day_grid_z[:, None], dims=("day", "feature")
+            )
+            _date_idx_data = pm.Data("date_idx", date_idx, dims="observation")
+            _pitcher_idx_data = pm.Data(
+                "pitcher_idx", pitcher_idx_num, dims="observation"
+            )
+            _n_pitches_data = pm.Data(
+                "n_pitches", n_pitches, dims="observation"
+            )
+            _spin_data = pm.Data("spin_rate", spin_z, dims="observation")
+
+            _alpha_pop = pm.Normal("alpha_pop", mu=0, sigma=1)
+            _sigma_pitcher = pm.HalfNormal("sigma_pitcher", sigma=1)
+            _pitcher_offset_raw = pm.Normal(
+                "pitcher_offset_raw", mu=0, sigma=1, dims="pitcher"
+            )
+            _pitcher_intercept = pm.Deterministic(
+                "pitcher_intercept",
+                _sigma_pitcher
+                * (_pitcher_offset_raw - pt.mean(_pitcher_offset_raw)),
+                dims="pitcher",
+            )
+
+            _ell = pm.LogNormal("ell", mu=0, sigma=0.5)
             _eta_pop = pm.HalfNormal("eta_pop", sigma=1)
             _gp_pop = pm.gp.Latent(
-                cov_func=_eta_pop**2 * pm.gp.cov.Matern52(1, ls=_ell_pop)
+                cov_func=_eta_pop**2 * pm.gp.cov.Matern52(1, ls=_ell)
             )
-            _f_pop = _gp_pop.prior("f_pop", X=_day_data[:, None], dims="obs")
-            _sigma_dev = pm.HalfNormal("sigma_dev", sigma=0.5)
-            _offset = pm.Normal("offset", 0, 1, dims="pitcher")
-            _dev = pm.Deterministic(
-                "dev", _sigma_dev * _offset, dims="pitcher"
+            _f_pop_raw = _gp_pop.prior(
+                "f_pop_raw", X=_day_grid_data, dims="day"
+            )
+            _f_pop = pm.Deterministic(
+                "f_pop", _f_pop_raw - pt.mean(_f_pop_raw), dims="day"
+            )
+
+            _eta_dev = pm.HalfNormal("eta_dev", sigma=0.5)
+            _gp_dev = pm.gp.Latent(
+                cov_func=_eta_dev**2 * pm.gp.cov.Matern52(1, ls=_ell)
+            )
+            _f_dev_raw = _gp_dev.prior(
+                "f_dev_raw",
+                X=_day_grid_data,
+                n_outputs=3,
+                dims=("pitcher", "day"),
+            )
+            _f_dev = pm.Deterministic(
+                "f_dev",
+                _f_dev_raw
+                - pt.mean(_f_dev_raw, axis=0, keepdims=True)
+                - pt.mean(_f_dev_raw, axis=1, keepdims=True)
+                + pt.mean(_f_dev_raw),
+                dims=("pitcher", "day"),
             )
             _sigma_obs = pm.HalfNormal("sigma_obs", sigma=0.5)
+            _noise_scale = pm.math.sqrt(_n_pitches_data / n_pitches.mean())
             pm.Normal(
                 "spin_obs",
-                mu=_f_pop + _dev[_pitcher_data],
-                sigma=_sigma_obs,
+                mu=(
+                    _alpha_pop
+                    + _pitcher_intercept[_pitcher_idx_data]
+                    + _f_pop[_date_idx_data]
+                    + _f_dev[_pitcher_idx_data, _date_idx_data]
+                ),
+                sigma=_sigma_obs / _noise_scale,
                 observed=_spin_data,
-                dims="obs",
+                dims="observation",
             )
-            if day_grid_z is not None:
-                _day_prediction = pm.Data(
-                    "day_prediction", day_grid_z, dims="prediction"
-                )
-                _gp_pop.conditional(
-                    "f_pop_grid",
-                    _day_prediction[:, None],
-                    dims="prediction",
-                )
         return spin_model
 
     spin_model = build_spin_model()
@@ -1403,15 +1560,17 @@ def _(mo):
 @app.cell
 def _(RANDOM_SEED, pm, spin_model):
     with spin_model:
-        spin_prior_pred = pm.sample_prior_predictive(draws=500, random_seed=RANDOM_SEED)
+        spin_prior_pred = pm.sample_prior_predictive(
+            draws=500, random_seed=RANDOM_SEED
+        )
     return (spin_prior_pred,)
 
 
 @app.cell
-def _(spin_prior_pred, spin_z):
-    spin_prior_draws = spin_prior_pred["prior_predictive"]["spin_obs"].values.reshape(
-        -1, len(spin_z)
-    )
+def _(spin_prior_pred):
+    spin_prior_draws = spin_prior_pred["prior_predictive"]["spin_obs"].stack(
+        sample=("chain", "draw")
+    ).transpose("sample", "observation")
     return (spin_prior_draws,)
 
 
@@ -1419,12 +1578,13 @@ def _(spin_prior_pred, spin_z):
 def _(PYMC_LIGHT_BLUE, day_z, go, np, spin_prior_draws, spin_z):
     spin_prior_fig = go.Figure()
     rng_plot_spin = np.random.default_rng(0)
-    # Markers, not lines: three pitchers interleave in day order, so lines would zigzag.
-    for _i in rng_plot_spin.choice(spin_prior_draws.shape[0], size=50, replace=False):
+    for _i in rng_plot_spin.choice(
+        spin_prior_draws.sizes["sample"], size=50, replace=False
+    ):
         spin_prior_fig.add_trace(
             go.Scatter(
                 x=day_z,
-                y=spin_prior_draws[_i],
+                y=spin_prior_draws.isel(sample=_i).values,
                 mode="markers",
                 marker=dict(color=PYMC_LIGHT_BLUE, size=4),
                 opacity=0.15,
@@ -1499,12 +1659,17 @@ def _(
     spin_model,
 ):
     mo.stop(not (spin_fit_button.value or execute_models))
+    spin_model.compile_logp()(spin_model.initial_point())
     with spin_model:
         spin_start = perf_counter()
+        # The 500-draw default run had 30 divergences; 0.90 had 16 and 0.95
+        # had 3. This 0.99 threshold is the next geometry repair while keeping
+        # PyMC's default sampler; 3,000 retained draws support the all-RV ESS gate.
         spin_idata = pm.sample(
-            draws=1500,
+            draws=3000,
             tune=1500,
             chains=4,
+            target_accept=0.99,
             random_seed=RANDOM_SEED,
         )
         spin_sample_seconds = perf_counter() - spin_start
@@ -1563,52 +1728,75 @@ def _(
 
 
 @app.cell
-def _(day_mean, day_of_season, day_std, np):
-    spin_day_grid = np.linspace(day_of_season.min(), day_of_season.max(), 50)
-    spin_day_grid_z = (spin_day_grid - day_mean) / day_std
-    return spin_day_grid, spin_day_grid_z
+def _(RANDOM_SEED, pm, posterior_subset, spin_idata, spin_model):
+    with spin_model:
+        spin_observed_ppc = pm.sample_posterior_predictive(
+            posterior_subset(spin_idata),
+            var_names=["spin_obs"],
+            random_seed=RANDOM_SEED,
+        )
+    return (spin_observed_ppc,)
 
 
 @app.cell
-def _(
-    RANDOM_SEED,
-    build_spin_model,
-    sample_fresh_model_predictions,
-    spin_day_grid_z,
-    spin_idata,
-):
-    spin_grid_ppc = sample_fresh_model_predictions(
-        spin_idata,
-        lambda: build_spin_model(spin_day_grid_z),
-        var_names=["f_pop_grid"],
-        random_seed=RANDOM_SEED,
+def _(np, pitcher_idx_num, pitchers, spin_observed_ppc, spin_z):
+    pitcher_labels = np.asarray(pitchers)[pitcher_idx_num]
+    spin_replicated = spin_observed_ppc["posterior_predictive"]["spin_obs"].assign_coords(
+        pitcher_label=("observation", pitcher_labels)
     )
-    return (spin_grid_ppc,)
+    observed_spin = spin_replicated.isel(chain=0, draw=0).copy(data=spin_z)
+    spin_ppc_by_pitcher = {
+        "observed_group_mean": observed_spin.groupby("pitcher_label").mean(
+            "observation"
+        ),
+        "predictive_group_mean_eti": spin_replicated.groupby("pitcher_label")
+        .mean("observation")
+        .quantile([0.055, 0.945], dim=("chain", "draw")),
+    }
+    spin_ppc_by_pitcher
+    return (spin_ppc_by_pitcher,)
 
 
 @app.cell
 def _(
-    eti_bounds,
+    day_grid,
     day_of_season,
+    eti_bounds,
     go,
     np,
     pitcher_idx_num,
     pitchers,
-    spin_day_grid,
-    spin_grid_ppc,
     spin_idata,
     spin_mean,
     spin_std,
     spin_vals,
 ):
-    _grid_n = len(spin_day_grid)
-    f_pop_grid_samples = spin_grid_ppc["predictions"]["f_pop_grid"]
-    f_pop_grid_samples = f_pop_grid_samples.rename(
-        {f_pop_grid_samples.dims[-1]: "day"}
-    ).assign_coords(day=spin_day_grid)
-    dev_samples = spin_idata["posterior"]["dev"]
+    posterior = spin_idata["posterior"]
+    population = posterior["alpha_pop"] + posterior["f_pop"]
+    population_rpm = population * spin_std + spin_mean
+    population_mean = population_rpm.mean(dim=("chain", "draw"))
+    population_lo, population_hi = eti_bounds(population_rpm)
 
     spin_traj_fig = go.Figure()
+    spin_traj_fig.add_trace(
+        go.Scatter(
+            x=np.concatenate([day_grid, day_grid[::-1]]),
+            y=np.concatenate([population_hi.values, population_lo.values[::-1]]),
+            fill="toself",
+            fillcolor="rgba(80,80,80,0.12)",
+            line=dict(color="rgba(255,255,255,0)"),
+            name="population 89% ETI",
+        )
+    )
+    spin_traj_fig.add_trace(
+        go.Scatter(
+            x=day_grid,
+            y=population_mean.values,
+            mode="lines",
+            name="population trajectory",
+            line=dict(color="black", width=3, dash="dash"),
+        )
+    )
     _colors = ["#154A72", "#81C240", "#4A9EDE"]
     _fill_colors = [
         "rgba(21,74,114,0.15)",
@@ -1616,14 +1804,17 @@ def _(
         "rgba(74,158,222,0.15)",
     ]
     for _i, _pitcher in enumerate(pitchers):
-        _combined = (
-            f_pop_grid_samples + dev_samples.isel(pitcher=_i)
+        _trajectory = (
+            posterior["alpha_pop"]
+            + posterior["pitcher_intercept"].isel(pitcher=_i)
+            + posterior["f_pop"]
+            + posterior["f_dev"].isel(pitcher=_i)
         ) * spin_std + spin_mean
-        _mean_traj = _combined.mean(dim=("chain", "draw"))
-        _lo, _hi = eti_bounds(_combined)
+        _mean_traj = _trajectory.mean(dim=("chain", "draw"))
+        _lo, _hi = eti_bounds(_trajectory)
         spin_traj_fig.add_trace(
             go.Scatter(
-                x=np.concatenate([spin_day_grid, spin_day_grid[::-1]]),
+                x=np.concatenate([day_grid, day_grid[::-1]]),
                 y=np.concatenate([_hi.values, _lo.values[::-1]]),
                 fill="toself",
                 fillcolor=_fill_colors[_i],
@@ -1633,10 +1824,10 @@ def _(
         )
         spin_traj_fig.add_trace(
             go.Scatter(
-                x=spin_day_grid,
+                x=day_grid,
                 y=_mean_traj.values,
                 mode="lines",
-                name=f"{_pitcher} (posterior mean)",
+                name=f"{_pitcher} trajectory",
                 line=dict(color=_colors[_i], width=3),
             )
         )
@@ -1651,7 +1842,7 @@ def _(
             )
         )
     spin_traj_fig.update_layout(
-        title="Per-pitcher posterior trajectories: shared trend + partially-pooled offset",
+        title="Population and pitcher-specific functional-deviation trajectories",
         xaxis_title="Days since first game in dataset",
         yaxis_title="Spin rate (rpm)",
         template="plotly_white",
@@ -1663,21 +1854,17 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    Each pitcher's posterior trajectory is the **same shared shape**
-    ($f_{\text{pop}}$, the population trend), shifted up or down by
-    that pitcher's own partially-pooled offset — visible as three
-    vertically-separated curves that all rise and fall together. The
-    model borrows the within-season *shape* across all 30
-    observations, while still giving each pitcher their own level.
+    The solid trajectories combine the population curve, the sum-to-zero
+    pitcher intercept, and each pitcher's two-way-centered functional
+    deviation. Thus they can differ in shape, not merely vertical offset.
 
-    ### Exercise: inspect pooling by changing the `sigma_dev` prior
+    ### Exercise: inspect functional pooling
 
-    The `sigma_dev ~ HalfNormal(0.5)` prior controls how much pitchers
-    are *allowed* to differ from the shared trend. Refit with a much
-    tighter prior (e.g. `HalfNormal(0.05)`, forcing near-complete
-    pooling) and a much looser one (e.g. `HalfNormal(5)`, allowing
-    near-independent fits). How do the three trajectories above change?
-    Expand for a discussion.
+    Refit after tightening or loosening `eta_dev`, the scale of the
+    pitcher-specific GP deviations. Compare the labeled population trajectory,
+    pitcher trajectories, pooling scales, and grouped posterior-predictive
+    table; do not treat a better-looking curve as evidence without checking
+    those predictive discrepancies.
     """)
     return
 
@@ -1689,26 +1876,18 @@ def _(mo):
             "Discussion": mo.md(
                 """
                 ```python
-                sigma_dev = pm.HalfNormal("sigma_dev", sigma=0.05)  # tight: forces pooling
+                eta_dev = pm.HalfNormal("eta_dev", sigma=0.1)  # tighter functional pooling
                 # or
-                sigma_dev = pm.HalfNormal("sigma_dev", sigma=5)  # loose: nearly independent
+                eta_dev = pm.HalfNormal("eta_dev", sigma=1.0)  # looser functional pooling
                 ```
 
-                With a tight prior, the three per-pitcher offsets are
-                squeezed toward zero regardless of what the data suggest —
-                the three trajectories in the plot above would nearly
-                coincide, even though the raw data (first scatter plot in
-                this section) show visibly different average spin rates
-                per pitcher. That is **too much** pooling: it discards real
-                signal. With a loose prior, each pitcher's offset is
-                estimated almost independently from the other two — with
-                only 10 games each, individual trajectories become noisier
-                and more sensitive to that pitcher's particular games,
-                losing the benefit of borrowing strength across pitchers
-                for the shared shape. The `HalfNormal(0.5)` prior used
-                above sits between these extremes and lets the data (via
-                the posterior on `sigma_dev` itself) decide how much
-                pooling is warranted.
+                Tightening `eta_dev` pulls the two-way-centered deviations
+                toward zero, so pitchers share more of the population shape.
+                Loosening it permits distinct shapes, but each pitcher has
+                only ten observations. Compare the posterior on `eta_dev` and
+                `sigma_pitcher` with the grouped posterior-predictive
+                discrepancies before deciding whether the additional
+                flexibility is supported.
                 """
             )
         }
