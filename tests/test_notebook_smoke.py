@@ -154,11 +154,56 @@ def test_foundations_artifact_contract_rejects_nonfour_chain_datatree():
     with pytest.raises(AssertionError, match="chain"):
         assert_foundations_artifact_contract(idata, {"mu"})
 
+def assert_marginal_latent_artifact_contract(
+    idata, free_rv_names: set[str], observed_name: str, observed_dim: str
+) -> None:
+    import arviz as az
+
+    posterior = idata["posterior"]
+    assert free_rv_names <= set(posterior.data_vars)
+    assert posterior.sizes["chain"] == 4, "expected four chains"
+    assert idata["sample_stats"]["diverging"].sum().item() == 0
+
+    diagnostics = az.summary(
+        idata,
+        var_names=sorted(free_rv_names),
+        kind="diagnostics",
+        round_to="none",
+    )
+    assert diagnostics["r_hat"].notna().all()
+    assert (diagnostics["r_hat"] <= 1.01).all()
+    assert (diagnostics["ess_bulk"] >= 400).all()
+    assert (diagnostics["ess_tail"] >= 400).all()
+    assert idata["observed_data"][observed_name].dims == (observed_dim,)
+    assert idata["posterior_predictive"][observed_name].dims == (
+        "chain",
+        "draw",
+        observed_dim,
+    )
+
+
 def test_02_marginal_latent():
     run_notebook(
         NB / "02_marginal_latent_gps.py",
         timeout_s=180,
         expected_stderr="Naive MAP optimization complete",
+    )
+    import arviz as az
+
+    results_dir = NB.parent / "results"
+    structured = az.from_netcdf(results_dir / "02_marginal_gp.nc")
+    coal = az.from_netcdf(results_dir / "02_coal_latent_gp.nc")
+    assert_marginal_latent_artifact_contract(
+        structured,
+        {"intercept", "beta", "ell", "eta", "sigma"},
+        "y",
+        "observation",
+    )
+    assert_marginal_latent_artifact_contract(
+        coal,
+        {"alpha", "ell", "eta", "f_rotated_"},
+        "y",
+        "year",
     )
 
 
