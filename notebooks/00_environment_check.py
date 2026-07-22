@@ -13,16 +13,14 @@ def _():
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        # Environment Check
+    mo.md(r"""
+    # Environment Check
 
-        This notebook verifies that the workshop environment is set up correctly:
-        the required libraries import and report sane versions, the vendored
-        datasets load and are non-empty, and a small `pm.gp.Marginal` model
-        compiles (without sampling).
-        """
-    )
+    This notebook verifies that the workshop environment is set up correctly:
+    the required libraries import and report sane versions, the vendored
+    datasets load and are non-empty, and a small `pm.gp.Marginal` model
+    compiles (without sampling).
+    """)
     return
 
 
@@ -39,7 +37,7 @@ def _():
     print(f"marimo:  {marimo.__version__}")
     print(f"polars:  {pl.__version__}")
     print(f"plotly:  {plotly.__version__}")
-    return az, pl, pm
+    return pl, pm
 
 
 @app.cell
@@ -62,7 +60,6 @@ def _(pl):
         assert df.height > 0, f"{name} loaded but is empty"
         dataframes[name] = df
         print(f"{name}: {df.height} rows, {len(df.columns)} columns")
-
     return (dataframes,)
 
 
@@ -100,7 +97,9 @@ def _(graph):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md("## Environment OK")
+    mo.md("""
+    ## Environment OK
+    """)
     return
 
 
