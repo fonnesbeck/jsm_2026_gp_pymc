@@ -75,12 +75,14 @@ def _(mo):
         az,
         data_dir,
         execute_models,
+        eti,
         go,
         inference_health,
         np,
         perf_counter,
         pl,
         pm,
+        posterior_subset,
         results_dir,
         z,
     )
@@ -172,15 +174,26 @@ def _(mo):
 
 
 @app.cell
-def _(X, pm, y):
-    with pm.Model() as naive_model:
+def _(X, np, pm, y):
+    _naive_coords = {"observation": np.arange(len(y)), "feature": ["time"]}
+    with pm.Model(coords=_naive_coords) as naive_model:
+        _naive_X_data = pm.Data("X", X, dims=("observation", "feature"))
+        _naive_concentration_data = pm.Data(
+            "concentration", y, dims="observation"
+        )
         ell_naive = pm.InverseGamma("ell", alpha=5, beta=5)
         eta_naive = pm.HalfNormal("eta", sigma=2)
         sigma_naive = pm.HalfNormal("sigma", sigma=1)
 
         cov_naive = eta_naive**2 * pm.gp.cov.Matern52(1, ls=ell_naive)
         gp_naive = pm.gp.Marginal(cov_func=cov_naive)
-        gp_naive.marginal_likelihood("y", X=X, y=y, sigma=sigma_naive)
+        gp_naive.marginal_likelihood(
+            "y",
+            X=_naive_X_data,
+            y=_naive_concentration_data,
+            sigma=sigma_naive,
+            dims="observation",
+        )
     return gp_naive, naive_model
 
 
@@ -301,8 +314,18 @@ def _(np, time_vals, z):
 
 
 @app.cell
-def _(X_log, pm, y):
-    with pm.Model() as gp_model:
+def _(X_log, np, pm, y):
+    _structured_coords = {
+        "observation": np.arange(len(y)),
+        "feature": ["log_time"],
+    }
+    with pm.Model(coords=_structured_coords) as gp_model:
+        _structured_X_data = pm.Data(
+            "X", X_log, dims=("observation", "feature")
+        )
+        _structured_concentration_data = pm.Data(
+            "concentration", y, dims="observation"
+        )
         beta_mean = pm.Normal("beta_mean", mu=0, sigma=1)
         intercept_mean = pm.Normal("intercept_mean", mu=0, sigma=1)
         mean_func = pm.gp.mean.Linear(coeffs=beta_mean, intercept=intercept_mean)
@@ -313,7 +336,13 @@ def _(X_log, pm, y):
         cov_func = eta**2 * pm.gp.cov.Matern52(1, ls=ell)
 
         gp = pm.gp.Marginal(mean_func=mean_func, cov_func=cov_func)
-        gp.marginal_likelihood("y", X=X_log, y=y, sigma=sigma)
+        gp.marginal_likelihood(
+            "y",
+            X=_structured_X_data,
+            y=_structured_concentration_data,
+            sigma=sigma,
+            dims="observation",
+        )
     return gp, gp_model
 
 
@@ -622,7 +651,7 @@ def _(RANDOM_SEED, gp_model, idata, pm):
 @app.cell
 def _(
     PYMC_BLUE,
-    az,
+    eti,
     conc_mean,
     conc_std,
     conc_vals,
@@ -632,48 +661,50 @@ def _(
     time_grid,
     time_vals,
 ):
-    f_pred_vals = (
-        ppc["posterior_predictive"]["f_pred"].values.reshape(-1, len(time_grid))
-        * conc_std
-        + conc_mean
-    )
-    f_pred_noise_vals = (
-        ppc["posterior_predictive"]["f_pred_noise"].values.reshape(-1, len(time_grid))
-        * conc_std
-        + conc_mean
-    )
+    _f_pred_draws = ppc["posterior_predictive"]["f_pred"]
+    _f_pred_draws = _f_pred_draws.rename(
+        {_f_pred_draws.dims[-1]: "time_grid"}
+    ).assign_coords(time_grid=time_grid)
+    _f_pred_noise_draws = ppc["posterior_predictive"]["f_pred_noise"]
+    _f_pred_noise_draws = _f_pred_noise_draws.rename(
+        {_f_pred_noise_draws.dims[-1]: "time_grid"}
+    ).assign_coords(time_grid=time_grid)
+    _f_pred_draws = _f_pred_draws * conc_std + conc_mean
+    _f_pred_noise_draws = _f_pred_noise_draws * conc_std + conc_mean
 
-    f_pred_mean = f_pred_vals.mean(axis=0)
-    f_pred_hdi = az.hdi(f_pred_vals, prob=0.89, axis=0)
-    f_pred_lo, f_pred_hi = f_pred_hdi[:, 0], f_pred_hdi[:, 1]
-    f_pred_noise_hdi = az.hdi(f_pred_noise_vals, prob=0.89, axis=0)
-    f_pred_noise_lo, f_pred_noise_hi = f_pred_noise_hdi[:, 0], f_pred_noise_hdi[:, 1]
+    _f_pred_mean = _f_pred_draws.mean(dim=("chain", "draw"))
+    _f_pred_interval = eti(_f_pred_draws)
+    _f_pred_lo = _f_pred_interval.sel(quantile=0.055)
+    _f_pred_hi = _f_pred_interval.sel(quantile=0.945)
+    _f_pred_noise_interval = eti(_f_pred_noise_draws)
+    _f_pred_noise_lo = _f_pred_noise_interval.sel(quantile=0.055)
+    _f_pred_noise_hi = _f_pred_noise_interval.sel(quantile=0.945)
 
     pred_fig = go.Figure()
     pred_fig.add_trace(
         go.Scatter(
             x=np.concatenate([time_grid, time_grid[::-1]]),
-            y=np.concatenate([f_pred_noise_hi, f_pred_noise_lo[::-1]]),
+            y=np.concatenate([_f_pred_noise_hi.values, _f_pred_noise_lo.values[::-1]]),
             fill="toself",
             fillcolor="rgba(74,158,222,0.15)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% HDI (with noise)",
+            name="89% ETI (with noise)",
         )
     )
     pred_fig.add_trace(
         go.Scatter(
             x=np.concatenate([time_grid, time_grid[::-1]]),
-            y=np.concatenate([f_pred_hi, f_pred_lo[::-1]]),
+            y=np.concatenate([_f_pred_hi.values, _f_pred_lo.values[::-1]]),
             fill="toself",
             fillcolor="rgba(21,74,114,0.35)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% HDI (f only)",
+            name="89% ETI (f only)",
         )
     )
     pred_fig.add_trace(
         go.Scatter(
             x=time_grid,
-            y=f_pred_mean,
+            y=_f_pred_mean.values,
             mode="lines",
             name="posterior mean",
             line=dict(color=PYMC_BLUE, width=3),
@@ -1050,17 +1081,20 @@ def _(mo):
 
 
 @app.cell
-def _(disaster_counts, pm, t):
-    with pm.Model() as coal_model:
+def _(disaster_counts, np, pm, t, year_vals):
+    coords = {"year": year_vals, "feature": ["standardized_year"]}
+    with pm.Model(coords=coords) as coal_model:
+        year_data = pm.Data("year_input", t, dims=("year", "feature"))
+        disaster_data = pm.Data("disaster_count", disaster_counts, dims="year")
         ell_coal = pm.InverseGamma("ell", alpha=5, beta=5)
         eta_coal = pm.HalfNormal("eta", sigma=1)
         cov_coal = eta_coal**2 * pm.gp.cov.Matern52(1, ls=ell_coal)
 
         gp_coal = pm.gp.Latent(cov_func=cov_coal)
-        f_coal = gp_coal.prior("f", X=t)
+        f_coal = gp_coal.prior("f", X=year_data, dims="year")
 
-        rate = pm.Deterministic("rate", pm.math.exp(f_coal))
-        pm.Poisson("y", mu=rate, observed=disaster_counts)
+        rate = pm.Deterministic("rate", pm.math.exp(f_coal), dims="year")
+        pm.Poisson("y", mu=rate, observed=disaster_data, dims="year")
     return (coal_model,)
 
 
@@ -1136,11 +1170,10 @@ def _(mo):
     ### Sampling
 
     112 latent function values plus 2 covariance hyperparameters. We use
-    `draws=1500, tune=1000, chains=2` (slightly more draws than the
-    `1000` default, to comfortably clear the `ess_bulk > 400` bar across
-    all 112 latent values) and raise `target_accept` to 0.95, which is
-    typical for latent GPs (the funnel between $f$ and its lengthscale
-    is more delicate than in the marginal case).
+    four chains and the default PyMC sampler settings, then inspect
+    divergences, R-hat, and effective sample sizes across all 112 latent
+    values rather than treating a sampler setting as a substitute for
+    identified geometry.
     """)
     return
 
@@ -1220,27 +1253,28 @@ def _(
 
 
 @app.cell
-def _(PYMC_BLUE, az, coal_idata, disaster_counts, go, np, year_vals):
-    rate_samples = coal_idata["posterior"]["rate"].values.reshape(-1, len(year_vals))
-    rate_mean = rate_samples.mean(axis=0)
-    rate_hdi = az.hdi(rate_samples, prob=0.89, axis=0)
-    rate_lo, rate_hi = rate_hdi[:, 0], rate_hdi[:, 1]
+def _(PYMC_BLUE, coal_idata, disaster_counts, eti, go, np, year_vals):
+    _rate_posterior = coal_idata["posterior"]["rate"]
+    _rate_mean = _rate_posterior.mean(dim=("chain", "draw"))
+    _rate_interval = eti(_rate_posterior)
+    _rate_lo = _rate_interval.sel(quantile=0.055)
+    _rate_hi = _rate_interval.sel(quantile=0.945)
 
     rate_fig = go.Figure()
     rate_fig.add_trace(
         go.Scatter(
             x=np.concatenate([year_vals, year_vals[::-1]]),
-            y=np.concatenate([rate_hi, rate_lo[::-1]]),
+            y=np.concatenate([_rate_hi.values, _rate_lo.values[::-1]]),
             fill="toself",
             fillcolor="rgba(21,74,114,0.25)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% HDI",
+            name="89% ETI",
         )
     )
     rate_fig.add_trace(
         go.Scatter(
             x=year_vals,
-            y=rate_mean,
+            y=_rate_mean.values,
             mode="lines",
             name="posterior mean rate",
             line=dict(color=PYMC_BLUE, width=3),
@@ -1270,7 +1304,7 @@ def _(mo):
     mo.md(r"""
     ### The posterior is a distribution over rate *functions*
 
-    The HDI band above summarizes the posterior, but it can hide that each
+    The 89% ETI band above summarizes the posterior, but it can hide that each
     posterior draw is a whole *function*. Plotting sixty individual draws of
     $\exp(f)$ makes the object concrete: the model is uncertain not about a
     few numbers but about the entire trajectory, and the draws fan out where
@@ -1307,13 +1341,19 @@ def _(PYMC_GREEN, coal_idata, go, np, year_vals):
 
 
 @app.cell
-def _(az, coal_idata, np, year_vals):
-    _rate = coal_idata["posterior"]["rate"].values.reshape(-1, len(year_vals))
+def _(coal_idata, eti, year_vals):
+    _rate = coal_idata["posterior"]["rate"]
 
     def _rate_at(year):
-        idx = int(np.argmin(np.abs(year_vals - year)))
-        col = _rate[:, idx]
-        return col.mean(), az.hdi(col, prob=0.89)
+        rate_at_year = _rate.sel(year=year, method="nearest")
+        interval = eti(rate_at_year)
+        return (
+            float(rate_at_year.mean(dim=("chain", "draw"))),
+            (
+                float(interval.sel(quantile=0.055)),
+                float(interval.sel(quantile=0.945)),
+            ),
+        )
 
     rate_1851 = _rate_at(1851)
     rate_1900 = _rate_at(1900)
@@ -1321,15 +1361,15 @@ def _(az, coal_idata, np, year_vals):
     pct_decline = 100 * (1 - rate_1962[0] / rate_1851[0])
     print(
         f"Mean rate 1851: {rate_1851[0]:.2f} /yr "
-        f"(89% HDI {rate_1851[1][0]:.2f}-{rate_1851[1][1]:.2f})"
+        f"(89% ETI {rate_1851[1][0]:.2f}-{rate_1851[1][1]:.2f})"
     )
     print(
         f"Mean rate 1900: {rate_1900[0]:.2f} /yr "
-        f"(89% HDI {rate_1900[1][0]:.2f}-{rate_1900[1][1]:.2f})"
+        f"(89% ETI {rate_1900[1][0]:.2f}-{rate_1900[1][1]:.2f})"
     )
     print(
         f"Mean rate 1962: {rate_1962[0]:.2f} /yr "
-        f"(89% HDI {rate_1962[1][0]:.2f}-{rate_1962[1][1]:.2f})"
+        f"(89% ETI {rate_1962[1][0]:.2f}-{rate_1962[1][1]:.2f})"
     )
     print(f"Overall decline 1851 to 1962: {pct_decline:.0f}%")
     return pct_decline, rate_1851, rate_1900, rate_1962
@@ -1349,7 +1389,7 @@ def _(mo, pct_decline, rate_1851, rate_1900, rate_1962):
         mine-safety regulation and inspection over that period. Two modelling
         points worth stressing to a class:
 
-        - The GP reports the decline **with uncertainty everywhere** (the HDIs
+        - The GP reports the decline **with uncertainty everywhere** (the 89% ETIs
           above), rather than a single point estimate of one changepoint year.
           It stays agnostic about *whether* the change was abrupt or gradual and
           lets the data decide — and the data prefer gradual.
