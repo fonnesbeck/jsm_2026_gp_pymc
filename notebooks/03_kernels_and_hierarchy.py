@@ -45,9 +45,18 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
+    import sys
     from pathlib import Path
+
+    notebook_dir = mo.notebook_dir()
+    if notebook_dir is None:
+        raise RuntimeError("Marimo could not determine this notebook's directory.")
+    project_root = notebook_dir.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
     from inference_contract import (
-        eti,
+        eti_bounds,
         inference_health,
         posterior_subset,
         sample_fresh_model_predictions,
@@ -71,10 +80,10 @@ def _(mo):
     execute_models = is_script_mode or bool(
         mo.cli_args().get("execute-models", False)
     )
-    results_dir = Path(__file__).parent.parent / "results"
+    results_dir = project_root / "results"
     results_dir.mkdir(exist_ok=True)
 
-    data_dir = Path(__file__).parent.parent / "data"
+    data_dir = project_root / "data"
 
     def z(a):
         """Standardize an array: (a - mean) / population std."""
@@ -88,7 +97,7 @@ def _(mo):
         az,
         data_dir,
         execute_models,
-        eti,
+        eti_bounds,
         inference_health,
         go,
         np,
@@ -97,6 +106,7 @@ def _(mo):
         pm,
         posterior_subset,
         results_dir,
+        sample_fresh_model_predictions,
         z,
     )
 
@@ -614,7 +624,7 @@ def _(
 @app.cell
 def _(
     PYMC_BLUE,
-    eti,
+    eti_bounds,
     go,
     np,
     tide_hours,
@@ -629,9 +639,7 @@ def _(
     )
     tide_fit = tide_fit * tide_level_std + tide_level_mean
     tide_fit_mean = tide_fit.mean(dim=("chain", "draw"))
-    tide_fit_interval = eti(tide_fit)
-    tide_fit_lo = tide_fit_interval.sel(quantile=0.055)
-    tide_fit_hi = tide_fit_interval.sel(quantile=0.945)
+    tide_fit_lo, tide_fit_hi = eti_bounds(tide_fit)
 
     tide_fit_fig = go.Figure()
     tide_fit_fig.add_trace(
@@ -1578,7 +1586,7 @@ def _(
 
 @app.cell
 def _(
-    eti,
+    eti_bounds,
     day_of_season,
     go,
     np,
@@ -1610,9 +1618,7 @@ def _(
             f_pop_grid_samples + dev_samples.isel(pitcher=_i)
         ) * spin_std + spin_mean
         _mean_traj = _combined.mean(dim=("chain", "draw"))
-        _interval = eti(_combined)
-        _lo = _interval.sel(quantile=0.055)
-        _hi = _interval.sel(quantile=0.945)
+        _lo, _hi = eti_bounds(_combined)
         spin_traj_fig.add_trace(
             go.Scatter(
                 x=np.concatenate([spin_day_grid, spin_day_grid[::-1]]),

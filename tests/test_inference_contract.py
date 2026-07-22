@@ -3,7 +3,7 @@ import numpy as np
 import pymc as pm
 import xarray as xr
 
-from inference_contract import eti, inference_health, posterior_subset
+from inference_contract import eti, eti_bounds, inference_health, posterior_subset
 
 
 def test_eti_returns_labeled_equal_tailed_bounds():
@@ -18,6 +18,19 @@ def test_eti_returns_labeled_equal_tailed_bounds():
     assert interval.dims == ("quantile", "location")
     assert interval.coords["location"].values.tolist() == ["a", "b", "c"]
     np.testing.assert_allclose(interval["quantile"], [0.055, 0.945])
+
+
+def test_eti_bounds_select_by_order_without_float_coordinate_matching():
+    data = xr.DataArray(
+        np.arange(2 * 10 * 3).reshape(2, 10, 3),
+        dims=("chain", "draw", "location"),
+        coords={"location": ["a", "b", "c"]},
+    )
+
+    lower, upper = eti_bounds(data)
+
+    assert lower.equals(eti(data).isel(quantile=0))
+    assert upper.equals(eti(data).isel(quantile=1))
 
 
 def test_posterior_subset_preserves_every_chain_and_even_draws():

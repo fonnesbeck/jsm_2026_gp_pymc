@@ -52,8 +52,17 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
+    import sys
     from pathlib import Path
-    from inference_contract import eti, inference_health, posterior_subset
+
+    notebook_dir = mo.notebook_dir()
+    if notebook_dir is None:
+        raise RuntimeError("Marimo could not determine this notebook's directory.")
+    project_root = notebook_dir.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    from inference_contract import eti_bounds, inference_health, posterior_subset
 
     import arviz as az
     import numpy as np
@@ -75,10 +84,10 @@ def _(mo):
     execute_models = is_script_mode or bool(
         mo.cli_args().get("execute-models", False)
     )
-    results_dir = Path(__file__).parent.parent / "results"
+    results_dir = project_root / "results"
     results_dir.mkdir(exist_ok=True)
 
-    data_dir = Path(__file__).parent.parent / "data"
+    data_dir = project_root / "data"
 
     def z(a):
         """Standardize an array: (a - mean) / population std."""
@@ -93,7 +102,7 @@ def _(mo):
         az,
         data_dir,
         execute_models,
-        eti,
+        eti_bounds,
         go,
         inference_health,
         make_subplots,
@@ -892,7 +901,7 @@ def _(mo, pw_n_div, pw_summary):
 def _(
     PYMC_BLUE,
     PYMC_GREEN,
-    eti,
+    eti_bounds,
     conc_mean,
     conc_std,
     conc_vals,
@@ -920,9 +929,7 @@ def _(
     ) * conc_std + conc_mean
 
     pw_fit_mean = mu_orig.mean(dim=("chain", "draw"))
-    pw_fit_interval = eti(mu_orig)
-    pw_fit_lo = pw_fit_interval.sel(quantile=0.055)
-    pw_fit_hi = pw_fit_interval.sel(quantile=0.945)
+    pw_fit_lo, pw_fit_hi = eti_bounds(mu_orig)
 
     pw_fit_fig = go.Figure()
     pw_fit_fig.add_trace(
@@ -1010,12 +1017,10 @@ def _(mo):
 
 
 @app.cell
-def _(PYMC_GREEN, eti, go, pw_idata, time_mean, time_std):
+def _(PYMC_GREEN, eti_bounds, go, pw_idata, time_mean, time_std):
     # Convert the tau posterior back to hours to show how wide it is.
     tau_hours = pw_idata["posterior"]["tau"] * time_std + time_mean
-    tau_interval = eti(tau_hours)
-    tau_lo = float(tau_interval.sel(quantile=0.055))
-    tau_hi = float(tau_interval.sel(quantile=0.945))
+    tau_lo, tau_hi = (float(value) for value in eti_bounds(tau_hours))
 
     tau_fig = go.Figure()
     tau_fig.add_trace(
@@ -1582,8 +1587,7 @@ def _(
     conc_z,
     expquad,
     go,
-    gp_post_mean,
-    eti,
+    eti_bounds,
     np,
     time_grid,
     time_mean,
@@ -1613,9 +1617,10 @@ def _(
         dims=("chain", "draw", "time_grid"),
         coords={"chain": [0], "draw": np.arange(len(posterior_draws_z)), "time_grid": time_grid},
     )
-    gp_post_interval = eti(posterior_draws) * conc_std + conc_mean
-    gp_post_lo = gp_post_interval.sel(quantile=0.055).values
-    gp_post_hi = gp_post_interval.sel(quantile=0.945).values
+    gp_post_mean = post_mean_z * conc_std + conc_mean
+    gp_post_lo, gp_post_hi = (
+        endpoint.values for endpoint in eti_bounds(posterior_draws * conc_std + conc_mean)
+    )
 
     gp_reg_fig = go.Figure()
     gp_reg_fig.add_trace(

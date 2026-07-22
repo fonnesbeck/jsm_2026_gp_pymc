@@ -29,6 +29,12 @@ def eti(data, prob=0.89):
     )
 
 
+def eti_bounds(data, prob=0.89):
+    """Return the lower and upper equal-tailed interval endpoints by position."""
+    interval = eti(data, prob=prob)
+    return interval.isel(quantile=0), interval.isel(quantile=1)
+
+
 def posterior_subset(idata, draws_per_chain=100):
     """Select evenly spaced draws while retaining every chain and other dimensions."""
     draw_count = idata["posterior"].sizes.get("draw", 0)

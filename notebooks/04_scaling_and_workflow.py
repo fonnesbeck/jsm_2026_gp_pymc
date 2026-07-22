@@ -45,9 +45,18 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
+    import sys
     from pathlib import Path
+
+    notebook_dir = mo.notebook_dir()
+    if notebook_dir is None:
+        raise RuntimeError("Marimo could not determine this notebook's directory.")
+    project_root = notebook_dir.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
     from inference_contract import (
-        eti,
+        eti_bounds,
         inference_health,
         posterior_subset,
         sample_fresh_model_predictions,
@@ -71,10 +80,10 @@ def _(mo):
     execute_models = is_script_mode or bool(
         mo.cli_args().get("execute-models", False)
     )
-    results_dir = Path(__file__).parent.parent / "results"
+    results_dir = project_root / "results"
     results_dir.mkdir(exist_ok=True)
 
-    data_dir = Path(__file__).parent.parent / "data"
+    data_dir = project_root / "data"
 
     def z(a):
         """Standardize an array: (a - mean) / population std."""
@@ -89,7 +98,7 @@ def _(mo):
         az,
         data_dir,
         execute_models,
-        eti,
+        eti_bounds,
         inference_health,
         go,
         np,
@@ -98,6 +107,7 @@ def _(mo):
         pm,
         posterior_subset,
         results_dir,
+        sample_fresh_model_predictions,
         z,
     )
 
@@ -332,7 +342,6 @@ def _(X_sparse, np, pm, sparse_hours_std, y_sparse):
                 Xu=_Xu,
                 y=_tide_level_data,
                 sigma=_sigma_sparse,
-                dims="observation",
             )
             if X_pred is not None:
                 _X_pred = pm.Data(
@@ -600,7 +609,7 @@ def _(
     N_INDUCING,
     PYMC_BLUE,
     Xu,
-    eti,
+    eti_bounds,
     go,
     np,
     sparse_hours,
@@ -615,9 +624,7 @@ def _(
     )
     sparse_fit = sparse_fit * sparse_level_std + sparse_level_mean
     sparse_fit_mean = sparse_fit.mean(dim=("chain", "draw"))
-    sparse_fit_interval = eti(sparse_fit)
-    sparse_fit_lo = sparse_fit_interval.sel(quantile=0.055)
-    sparse_fit_hi = sparse_fit_interval.sel(quantile=0.945)
+    sparse_fit_lo, sparse_fit_hi = eti_bounds(sparse_fit)
 
     sparse_fit_fig = go.Figure()
     sparse_fit_fig.add_trace(
@@ -1174,7 +1181,7 @@ def _(
 @app.cell
 def _(
     PYMC_BLUE,
-    eti,
+    eti_bounds,
     go,
     hsgp_hours,
     hsgp_idata,
@@ -1195,9 +1202,7 @@ def _(
         _f_trend_posterior + _f_semi_posterior
     ) * hsgp_level_std + hsgp_level_mean
     hsgp_fit_mean = hsgp_fit.mean(dim=("chain", "draw"))
-    hsgp_fit_interval = eti(hsgp_fit)
-    hsgp_fit_lo = hsgp_fit_interval.sel(quantile=0.055)
-    hsgp_fit_hi = hsgp_fit_interval.sel(quantile=0.945)
+    hsgp_fit_lo, hsgp_fit_hi = eti_bounds(hsgp_fit)
 
     hsgp_fit_fig = go.Figure()
     hsgp_fit_fig.add_trace(
@@ -1236,7 +1241,10 @@ def _(
         template="plotly_white",
     )
     hsgp_fit_fig
-    return (hsgp_fit.stack(sample=("chain", "draw")).transpose("sample", "hsgp_hour").values,)
+    hsgp_fit_vals = hsgp_fit.stack(sample=("chain", "draw")).transpose(
+        "sample", "hsgp_hour"
+    ).values
+    return (hsgp_fit_vals,)
 
 
 @app.cell
