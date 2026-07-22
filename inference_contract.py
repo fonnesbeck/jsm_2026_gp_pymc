@@ -11,7 +11,7 @@ def sample_fresh_model_predictions(
     prediction_model = build_prediction_model()
     with prediction_model:
         return pm.sample_posterior_predictive(
-            idata,
+            posterior_subset(idata, draws_per_chain=100),
             var_names=var_names,
             random_seed=random_seed,
             predictions=True,

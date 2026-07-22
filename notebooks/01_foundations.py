@@ -62,7 +62,7 @@ def _(mo):
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    from inference_contract import eti_bounds, inference_health, posterior_subset
+    from inference_contract import eti, eti_bounds, inference_health, posterior_subset
 
     import arviz as az
     import numpy as np
@@ -102,6 +102,7 @@ def _(mo):
         az,
         data_dir,
         execute_models,
+        eti,
         eti_bounds,
         go,
         inference_health,

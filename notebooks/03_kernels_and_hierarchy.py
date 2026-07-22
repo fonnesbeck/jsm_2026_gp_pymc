@@ -56,6 +56,7 @@ def _(mo):
         sys.path.insert(0, str(project_root))
 
     from inference_contract import (
+        eti,
         eti_bounds,
         inference_health,
         posterior_subset,
@@ -97,6 +98,7 @@ def _(mo):
         az,
         data_dir,
         execute_models,
+        eti,
         eti_bounds,
         inference_health,
         go,
