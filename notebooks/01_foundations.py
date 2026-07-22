@@ -577,8 +577,8 @@ def _(az, warmup_idata):
 def _(conc_vals, mo, warmup_summary):
     mo.md(
         f"""
-        Both chains overlap and look stationary in the trace plot, and the
-        two rank histograms sit on top of each other near uniform — the
+        All four chains overlap and look stationary in the trace plot, and the
+        four rank histograms sit on top of each other near uniform — the
         visual signature of a well-mixed, converged sampler that matches the
         clean summary numbers.
 
@@ -1631,7 +1631,7 @@ def _(
             fill="toself",
             fillcolor="rgba(21,74,114,0.25)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="89% conditional interval",
+            name="89% ETI",
         )
     )
     gp_reg_fig.add_trace(
@@ -1668,7 +1668,7 @@ def _(mo):
     Compare this directly with the piecewise-linear fit from Part A. The
     GP posterior mean glides **smoothly** through the rise, rounds the
     peak without any corner, and eases down the decay — no knot to place,
-    no $\tau$ to argue over. The shaded 89% conditional interval is
+    no $\tau$ to argue over. The shaded 89% ETI is
     narrow where data are dense (the early rise) and widens where data are
     sparse (the long tail and beyond the last point), which is precisely
     uncertainty behavior we wanted and the piecewise model could not
