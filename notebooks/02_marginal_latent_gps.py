@@ -48,6 +48,7 @@ def _(mo):
         sys.path.insert(0, str(project_root))
 
     from inference_contract import (
+        eti,
         eti_bounds,
         inference_health,
         posterior_subset,
@@ -89,6 +90,7 @@ def _(mo):
         az,
         data_dir,
         execute_models,
+        eti,
         eti_bounds,
         go,
         inference_health,
@@ -1474,10 +1476,12 @@ def _(mo):
 
 
 @app.cell
-def _(RANDOM_SEED, coal_idata, coal_model, pm):
+def _(RANDOM_SEED, coal_idata, coal_model, pm, posterior_subset):
     with coal_model:
         coal_ppc = pm.sample_posterior_predictive(
-            coal_idata, var_names=["y"], random_seed=RANDOM_SEED
+            posterior_subset(coal_idata, draws_per_chain=100),
+            var_names=["y"],
+            random_seed=RANDOM_SEED,
         )
     return (coal_ppc,)
 

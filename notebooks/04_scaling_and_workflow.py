@@ -56,6 +56,7 @@ def _(mo):
         sys.path.insert(0, str(project_root))
 
     from inference_contract import (
+        eti,
         eti_bounds,
         inference_health,
         posterior_subset,
@@ -98,6 +99,7 @@ def _(mo):
         az,
         data_dir,
         execute_models,
+        eti,
         eti_bounds,
         inference_health,
         go,
@@ -1408,10 +1410,12 @@ def _(mo):
 
 
 @app.cell
-def _(RANDOM_SEED, hsgp_idata, hsgp_model, pm):
+def _(RANDOM_SEED, hsgp_idata, hsgp_model, pm, posterior_subset):
     with hsgp_model:
         wf_ppc = pm.sample_posterior_predictive(
-            hsgp_idata, var_names=["y"], random_seed=RANDOM_SEED
+            posterior_subset(hsgp_idata, draws_per_chain=100),
+            var_names=["y"],
+            random_seed=RANDOM_SEED,
         )
     return (wf_ppc,)
 

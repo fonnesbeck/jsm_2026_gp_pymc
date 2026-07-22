@@ -1,5 +1,11 @@
+import ast
+from pathlib import Path
+from unittest.mock import patch
+
 import arviz as az
 import numpy as np
+import pytest
+
 import pymc as pm
 import xarray as xr
 
@@ -126,3 +132,68 @@ def test_prediction_sampling_uses_a_fresh_model_without_mutating_fit_model():
     assert "f_pred" not in fitted_model.named_vars
     assert "/predictions" in predictions.groups
     assert predictions["predictions"]["f_pred"].sizes["prediction"] == 2
+
+
+def test_fresh_prediction_sampling_receives_100_evenly_spaced_draws_per_chain():
+    from inference_contract import sample_fresh_model_predictions
+
+    idata = az.from_dict(
+        {
+            "posterior": {
+                "alpha": np.arange(3 * 257, dtype=float).reshape(3, 257),
+            }
+        }
+    )
+    received = []
+
+    def capture_posterior(posterior, **_kwargs):
+        received.append(posterior)
+        return posterior
+
+    with patch(
+        "inference_contract.pm.sample_posterior_predictive",
+        side_effect=capture_posterior,
+    ):
+        sample_fresh_model_predictions(
+            idata,
+            pm.Model,
+            var_names=["alpha"],
+            random_seed=42,
+        )
+
+    expected_draws = np.linspace(0, 256, num=100, dtype=int).tolist()
+    assert received[0]["posterior"]["draw"].values.tolist() == expected_draws
+    assert received[0]["posterior"].sizes == {"chain": 3, "draw": 100}
+
+
+@pytest.mark.parametrize(
+    "notebook",
+    [
+        "01_foundations.py",
+        "02_marginal_latent_gps.py",
+        "03_kernels_and_hierarchy.py",
+        "04_scaling_and_workflow.py",
+    ],
+)
+def test_notebook_setup_cell_exports_eti_for_marimo_dependencies(notebook):
+    notebook_path = Path(__file__).resolve().parents[1] / "notebooks" / notebook
+    module = ast.parse(notebook_path.read_text())
+    setup_cells = [
+        function
+        for function in ast.walk(module)
+        if isinstance(function, ast.FunctionDef)
+        and any(
+            isinstance(statement, ast.ImportFrom)
+            and statement.module == "inference_contract"
+            and any(alias.name == "eti" for alias in statement.names)
+            for statement in function.body
+        )
+    ]
+
+    assert len(setup_cells) == 1
+    returned = setup_cells[0].body[-1]
+    assert isinstance(returned, ast.Return)
+    assert any(
+        isinstance(value, ast.Name) and value.id == "eti"
+        for value in returned.value.elts
+    )
