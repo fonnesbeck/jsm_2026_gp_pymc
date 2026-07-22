@@ -97,6 +97,18 @@ def test_00_environment_check_gp_contract():
 def test_01_foundations():
     run_notebook(NB / "01_foundations.py", timeout_s=900)
 
+    import arviz as az
+
+    for filename, expected_variables in (
+        ("01_warmup.nc", {"mu", "sigma"}),
+        ("01_piecewise.nc", {"peak", "rise", "decay", "tau", "sigma"}),
+    ):
+        idata = az.from_netcdf(NB.parent / "results" / filename)
+        posterior = idata["posterior"]
+        assert expected_variables <= set(posterior.data_vars)
+        assert {"chain", "draw"} <= set(posterior.dims)
+        assert idata["observed_data"]["conc_obs"].dims == ("observation",)
+
 
 def test_02_marginal_latent():
     run_notebook(

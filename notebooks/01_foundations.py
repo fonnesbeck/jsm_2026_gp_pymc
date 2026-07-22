@@ -303,17 +303,17 @@ def _(mo):
     $y_i$,
 
     $$y_i \sim \mathcal{N}(\mu, \sigma), \qquad
-    \mu \sim \mathcal{N}(5, 5), \qquad
-    \sigma \sim \text{HalfNormal}(5).$$
+    \mu \sim \mathcal{N}(5, 3), \qquad
+    \sigma \sim \text{HalfNormal}(3).$$
 
     Here $\mu$ is the subject's typical concentration (mg/L) and $\sigma$
     is how much individual measurements scatter around it. This is a
-    *bad* model — the true concentration rises then falls, so no single
-    mean describes it — but it is the perfect vehicle for meeting every
-    moving part of the PyMC workflow: the `pm.Model` context manager,
-    priors, a likelihood, the prior predictive check, `pm.sample`, the
-    returned inference object, `az.summary`, and convergence plots. We
-    will keep this warm-up in raw mg/L so the numbers stay interpretable.
+    deliberately simplified **constant-mean approximation**: the true
+    concentration rises then falls, so no single mean describes it. It is
+    nevertheless a useful first vehicle for the complete PyMC workflow:
+    priors, a likelihood, a prior predictive check, `pm.sample`, posterior
+    diagnostics, and posterior predictive criticism. We keep it in raw mg/L
+    so the numbers stay interpretable.
     """)
     return
 
@@ -359,12 +359,12 @@ def _(conc_vals, np, pm):
         _warmup_concentration_data = pm.Data(
             "concentration_data", conc_vals, dims="observation"
         )
-        mu = pm.Normal("mu", mu=5, sigma=5)
-        sigma = pm.HalfNormal("sigma", sigma=5)
+        mu = pm.Normal("mu", mu=5, sigma=3)
+        _warmup_sigma = pm.HalfNormal("sigma", sigma=3)
         pm.Normal(
             "conc_obs",
             mu=mu,
-            sigma=sigma,
+            sigma=_warmup_sigma,
             observed=_warmup_concentration_data,
             dims="observation",
         )
@@ -409,15 +409,13 @@ def _(RANDOM_SEED, pm, warmup_model):
 
 @app.cell
 def _(PYMC_LIGHT_BLUE, conc_vals, go, warmup_prior_pred):
-    warmup_prior_draws = warmup_prior_pred["prior_predictive"][
-        "conc_obs"
-    ].values.reshape(-1, len(conc_vals))
+    warmup_prior_draws = warmup_prior_pred["prior_predictive"]["conc_obs"]
+    warmup_prior_negative_fraction = float((warmup_prior_draws < 0).mean())
 
     warmup_prior_fig = go.Figure()
-    # Histogram of ALL simulated concentrations implied by the prior.
     warmup_prior_fig.add_trace(
         go.Histogram(
-            x=warmup_prior_draws.ravel(),
+            x=warmup_prior_draws.values.ravel(),
             histnorm="probability density",
             marker=dict(color=PYMC_LIGHT_BLUE),
             opacity=0.7,
@@ -433,21 +431,21 @@ def _(PYMC_LIGHT_BLUE, conc_vals, go, warmup_prior_pred):
         template="plotly_white",
     )
     warmup_prior_fig
-    return (warmup_prior_draws,)
+    return warmup_prior_draws, warmup_prior_negative_fraction
 
 
 @app.cell(hide_code=True)
-def _(conc_vals, mo, warmup_prior_draws):
+def _(conc_vals, mo, warmup_prior_draws, warmup_prior_negative_fraction):
     mo.md(
         f"""
-        **Plausibility check:** the prior predictive concentrations span
-        [{warmup_prior_draws.min():.1f}, {warmup_prior_draws.max():.1f}]
-        mg/L, comfortably covering the observed range
-        [{conc_vals.min():.2f}, {conc_vals.max():.2f}] mg/L without being
-        wildly wider. Some prior draws stray slightly negative — a known
-        artifact of a Normal likelihood on a positive quantity — but the mass
-        sits in a sensible pharmacological range. Broad but not absurd:
-        reasonable to proceed to sampling.
+        **Prior implication:** the simulated concentrations span
+        [{float(warmup_prior_draws.min()):.1f}, {float(warmup_prior_draws.max()):.1f}]
+        mg/L, versus an observed range of
+        [{conc_vals.min():.2f}, {conc_vals.max():.2f}] mg/L. Importantly,
+        **{warmup_prior_negative_fraction:.1%}** of simulated concentrations
+        are below zero. That is an explicit consequence of this deliberately
+        simple Normal observation model, not an artifact to dismiss; it helps
+        delimit what this warm-up model can represent.
         """
     )
     return
@@ -459,8 +457,8 @@ def _(mo):
     ### Sampling the posterior
 
     Now we draw from the posterior with PyMC's default `pm.sample`
-    configuration. We ask for `draws=1000` posterior samples per chain
-    after `tune=1000` warm-up steps across `chains=4` independent chains;
+    configuration. We ask for `draws=600` posterior samples per chain
+    after `tune=600` warm-up steps across `chains=4` independent chains;
     multiple chains let us diagnose convergence. Passing
     `random_seed=RANDOM_SEED` makes the run reproducible.
 
@@ -493,48 +491,34 @@ def _(
     mo.stop(not (warmup_fit_button.value or execute_models))
     with warmup_model:
         warmup_idata = pm.sample(
-            draws=1000, tune=1000, chains=4, random_seed=RANDOM_SEED
+            draws=600, tune=600, chains=4, random_seed=RANDOM_SEED
         )
     warmup_idata.to_netcdf(results_dir / "01_warmup.nc")
     return (warmup_idata,)
 
 
 @app.cell
-def _(inference_health, warmup_idata, warmup_model):
-    warmup_summary, warmup_health_passed = inference_health(
+def _(az, inference_health, warmup_idata, warmup_model):
+    warmup_diagnostics, warmup_health_passed = inference_health(
         warmup_idata, warmup_model
     )
-    warmup_n_div = warmup_summary.attrs["divergences"]
+    warmup_summary = az.summary(warmup_idata, var_names=["mu", "sigma"])
+    warmup_n_div = warmup_diagnostics.attrs["divergences"]
     print(f"Divergences: {warmup_n_div}; health passed: {warmup_health_passed}")
-    warmup_summary
-    return warmup_n_div, warmup_summary
+    warmup_diagnostics
+    return warmup_diagnostics, warmup_n_div, warmup_summary
 
 
 @app.cell(hide_code=True)
-def _(mo, warmup_n_div, warmup_summary):
+def _(mo, warmup_diagnostics, warmup_n_div):
     mo.md(
         f"""
-        **Reading the diagnostics.** The table above (from `az.summary`) is
-        the first thing to check after any fit. Two columns matter most:
-
-        - **`r_hat`** compares variance *within* each chain to variance
-          *between* chains. If the chains have converged to the same
-          distribution it sits at **1.00**; values above ~1.01 warn that the
-          chains disagree. Here the maximum `r_hat` is
-          {float(warmup_summary["r_hat"].astype(float).max()):.3f}.
-        - **`ess_bulk` / `ess_tail`** are *effective sample sizes* — how many
-          truly independent draws your (autocorrelated) chains are worth, in
-          the bulk and the tails of the distribution respectively. We want
-          both comfortably above ~400. Here the minimum `ess_bulk` is
-          {float(warmup_summary["ess_bulk"].min()):.0f} and the minimum
-          `ess_tail` is {float(warmup_summary["ess_tail"].min()):.0f}.
-
-        We also print the number of **divergences** — transitions where the
-        sampler's numerical integrator broke down, each a red flag for
-        biased results. Here there were **{warmup_n_div}**. With near-perfect
-        `r_hat`, healthy ESS, and no divergences, this fit has converged and
-        is safe to interpret. We will run exactly this three-part check
-        (divergences + `r_hat` + ESS) after every model in the workshop.
+        **Reading the diagnostics.** The table above includes every free
+        variable. Its computed status is **{warmup_diagnostics.attrs["passed"]}**:
+        the required standard is zero divergences, `r_hat ≤ 1.01`, and both
+        bulk and tail ESS at least 400. The observed divergence count is
+        {warmup_n_div}; inspect the full table and the chain plots before
+        interpreting a fit rather than pre-declaring it successful.
         """
     )
     return
@@ -573,26 +557,87 @@ def _(az, warmup_idata):
     return
 
 
+@app.cell
+def _(RANDOM_SEED, pm, posterior_subset, results_dir, warmup_idata, warmup_model):
+    with warmup_model:
+        warmup_ppc = pm.sample_posterior_predictive(
+            posterior_subset(warmup_idata),
+            var_names=["conc_obs"],
+            random_seed=RANDOM_SEED,
+        )
+    warmup_idata["posterior_predictive"] = warmup_ppc["posterior_predictive"]
+    warmup_idata.to_netcdf(results_dir / "01_warmup.nc")
+    return (warmup_ppc,)
+
+
+@app.cell
+def _(PYMC_BLUE, PYMC_GREEN, conc_vals, go, mo, time_vals, warmup_ppc):
+    warmup_ppc_draws = warmup_ppc["posterior_predictive"]["conc_obs"]
+    warmup_ppc_mean = warmup_ppc_draws.mean(dim=("chain", "draw"))
+    warmup_residuals = conc_vals - warmup_ppc_mean
+
+    warmup_ppc_fig = go.Figure()
+    warmup_ppc_fig.add_trace(
+        go.Histogram(
+            x=warmup_ppc_draws.values.ravel(),
+            histnorm="probability density",
+            marker=dict(color=PYMC_GREEN),
+            opacity=0.55,
+            name="posterior predictive concentrations",
+        )
+    )
+    warmup_ppc_fig.add_trace(
+        go.Histogram(
+            x=conc_vals,
+            histnorm="probability density",
+            marker=dict(color=PYMC_BLUE),
+            opacity=0.55,
+            name="observed concentrations",
+        )
+    )
+    warmup_ppc_fig.update_layout(
+        barmode="overlay",
+        title="Warm-up posterior predictive distribution",
+        xaxis_title="Concentration (mg/L)",
+        yaxis_title="density",
+        template="plotly_white",
+    )
+
+    warmup_residual_fig = go.Figure()
+    warmup_residual_fig.add_hline(y=0, line_dash="dash", line_color="black")
+    warmup_residual_fig.add_trace(
+        go.Scatter(
+            x=time_vals,
+            y=warmup_residuals.values,
+            mode="markers+lines",
+            marker=dict(color=PYMC_BLUE, size=9),
+            name="observed − PPC mean",
+        )
+    )
+    warmup_residual_fig.update_layout(
+        title="Warm-up residuals retain the ignored time structure",
+        xaxis_title="Time since dose (hours)",
+        yaxis_title="Residual (mg/L)",
+        template="plotly_white",
+    )
+    mo.vstack([warmup_ppc_fig, warmup_residual_fig])
+    return warmup_ppc_mean, warmup_residuals
+
+
 @app.cell(hide_code=True)
-def _(conc_vals, mo, warmup_summary):
+def _(conc_vals, mo, warmup_residuals, warmup_summary):
     mo.md(
         f"""
-        All four chains overlap and look stationary in the trace plot, and the
-        four rank histograms sit on top of each other near uniform — the
-        visual signature of a well-mixed, converged sampler that matches the
-        clean summary numbers.
-
-        **What did we learn?** The posterior mean of $\\mu$ is about
-        {float(warmup_summary.loc["mu", "mean"]):.2f} mg/L — the subject's
-        average concentration — with $\\sigma$ near
-        {float(warmup_summary.loc["sigma", "mean"]):.2f} mg/L of scatter. But
-        that scatter is enormous relative to the signal, because it is
-        soaking up *real structure we ignored*: the concentration is not
-        random noise around a constant, it **rises and falls with time**. The
-        observed values run from {conc_vals.min():.2f} to
-        {conc_vals.max():.2f} mg/L precisely because of that time course. A
-        single mean throws all of it away. The obvious next step is to let
-        the mean depend on time.
+        The posterior mean of $\\mu$ is
+        {float(warmup_summary.loc["mu", "mean"]):.2f} mg/L, with $\\sigma$
+        near {float(warmup_summary.loc["sigma", "mean"]):.2f} mg/L. The
+        posterior predictive distribution provides an observed-data check;
+        the time-indexed residuals provide the sharper criticism here. They
+        are systematically negative early and late and positive around the
+        peak (range {float(warmup_residuals.min()):.2f} to
+        {float(warmup_residuals.max()):.2f} mg/L), so time structure remains
+        unexplained. A single mean throws that structure away; the next
+        baseline lets the mean depend on time.
         """
     )
     return
@@ -686,30 +731,24 @@ def _(mo):
     not know where the peak is, so we make its location a parameter,
     $\tau$, and let the data estimate it.
 
-    A clean way to write a one-knot broken stick uses a **hinge basis**.
-    On the (standardized) time axis $t$,
+    A continuous one-knot curve makes the interpretation unambiguous. On
+    standardized time $t$,
 
-    $$\mu(t) = \text{level} + \text{up}\cdot t
-    + \text{down}\cdot \max(0,\, t - \tau).$$
+    $$\mu(t)=\text{peak}
+      -\text{rise}\max(\tau-t,0)
+      -\text{decay}\max(t-\tau,0).$$
 
-    Read it piece by piece. Before the knot ($t < \tau$) the
-    $\max(0, t-\tau)$ term is zero, so the slope is just `up`. After the
-    knot ($t > \tau$) the hinge switches on and the slope becomes
-    `up + down`. To bend a rise into a decay we expect `up` positive and
-    `down` negative and larger in magnitude, so the post-peak slope turns
-    downward. The priors:
+    `peak` is the value at the knot, `rise` is positive before it, and
+    `decay` is positive after it—so the post-knot slope is strictly negative.
+    We use
 
-    $$\text{level}\sim\mathcal N(0,1),\;
-    \text{up}\sim\text{HalfNormal}(2),\;
-    \text{down}\sim\mathcal N(0,2),\;
-    \tau\sim\text{Uniform}(t_{\min}, t_{\max}),\;
-    \sigma\sim\text{HalfNormal}(1).$$
+    $$\text{peak}\sim\mathcal N(0,1),\;
+    \text{rise},\text{decay}\sim\text{HalfNormal}(1),\;
+    \tau\sim\text{Uniform}(t_{\min},t_{\max}),\;
+    \sigma\sim\text{HalfNormal}(0.5).$$
 
-    `up` is HalfNormal to encode "absorption makes it rise"; `down` is an
-    unconstrained Normal so the data can decide how sharply it falls;
-    $\tau$ is Uniform over the observed time window. We work on
-    standardized time and concentration (numerically friendlier), and
-    convert $\tau$ back to hours when we interpret it.
+    $\tau$ remains on the observed standardized-time domain and is converted
+    to hours only for interpretation.
     """)
     return
 
@@ -723,24 +762,22 @@ def _(conc_z, np, pm, time_z):
             "concentration_data", conc_z, dims="observation"
         )
         t_lo, t_hi = float(time_z.min()), float(time_z.max())
-        level = pm.Normal("level", mu=0, sigma=1)
-        up = pm.HalfNormal("up", sigma=2)
-        down = pm.Normal("down", mu=0, sigma=2)
+        peak = pm.Normal("peak", mu=0, sigma=1)
+        rise = pm.HalfNormal("rise", sigma=1)
+        decay = pm.HalfNormal("decay", sigma=1)
         tau = pm.Uniform("tau", lower=t_lo, upper=t_hi)
-        sigma_pw = pm.HalfNormal("sigma_pw", sigma=1)
+        _pw_sigma = pm.HalfNormal("sigma", sigma=0.5)
 
-        # Hinge / broken-stick mean function: slope is `up` before tau,
-        # `up + down` after it. pm.math.maximum is the differentiable hinge.
         mu_pw = (
-            level
-            + up * _pw_time_data
-            + down * pm.math.maximum(0.0, _pw_time_data - tau)
+            peak
+            - rise * pm.math.maximum(tau - _pw_time_data, 0.0)
+            - decay * pm.math.maximum(_pw_time_data - tau, 0.0)
         )
         pm.Deterministic("mu_pw", mu_pw, dims="observation")
         pm.Normal(
             "conc_obs",
             mu=mu_pw,
-            sigma=sigma_pw,
+            sigma=_pw_sigma,
             observed=_pw_concentration_data,
             dims="observation",
         )
@@ -773,16 +810,18 @@ def _(RANDOM_SEED, pm, pw_model):
 
 @app.cell
 def _(PYMC_LIGHT_BLUE, conc_z, go, np, pw_prior_pred, time_z):
-    pw_prior_curves = pw_prior_pred["prior"]["mu_pw"].values.reshape(-1, len(time_z))
+    pw_prior_curves = pw_prior_pred["prior"]["mu_pw"]
     _order = np.argsort(time_z)
 
     pw_prior_fig = go.Figure()
     _rng_plot = np.random.default_rng(0)
-    for _i in _rng_plot.choice(pw_prior_curves.shape[0], size=60, replace=False):
+    _draw_indices = _rng_plot.choice(pw_prior_curves.sizes["draw"], size=60, replace=False)
+    for _i in _draw_indices:
+        _curve = pw_prior_curves.isel(chain=0, draw=int(_i))
         pw_prior_fig.add_trace(
             go.Scatter(
                 x=time_z[_order],
-                y=pw_prior_curves[_i][_order],
+                y=_curve.values[_order],
                 mode="lines",
                 line=dict(color=PYMC_LIGHT_BLUE, width=1),
                 opacity=0.2,
@@ -813,15 +852,11 @@ def _(conc_z, mo, pw_prior_curves):
     mo.md(
         f"""
         **Plausibility check:** the prior piecewise curves span roughly
-        [{pw_prior_curves.min():.1f}, {pw_prior_curves.max():.1f}] on the
-        standardized scale, bracketing the observed standardized range
-        [{conc_z.min():.2f}, {conc_z.max():.2f}]. You can see the model's
-        *inductive bias* directly in the plot: every draw is two straight
-        segments with a single kink. Some rise then fall (the shape we
-        hope for), some do the reverse, some barely bend — the prior is
-        agnostic about the exact geometry but has already committed, hard, to
-        "two lines and one corner". That commitment is the crux of what
-        follows. Reasonable to proceed.
+        [{float(pw_prior_curves.min()):.1f}, {float(pw_prior_curves.max()):.1f}]
+        on the standardized scale, bracketing the observed range
+        [{conc_z.min():.2f}, {conc_z.max():.2f}]. Every draw rises to a
+        continuous maximum then decays, but it still has a single sharp knot:
+        a visible and intentionally restrictive prior implication.
         """
     )
     return
@@ -832,13 +867,11 @@ def _(mo):
     mo.md(r"""
     ### Sampling
 
-    Five parameters (`level`, `up`, `down`, `tau`, `sigma_pw`) over 11
-    points. We use `draws=1000, tune=1000, chains=4` with PyMC's default
-    sampler settings. The hinge introduces a *kink* in the likelihood
-    surface as a function of $\tau$ (the gradient of $\max(0, t-\tau)$
-    jumps at each data point), which makes $\tau$ intrinsically harder to
-    sample than a smooth parameter — a first hint of the identifiability
-    trouble we are about to diagnose.
+    Five parameters (`peak`, `rise`, `decay`, `tau`, `sigma`) over 11
+    points. We use `draws=800, tune=800, chains=4` with PyMC's default
+    sampler settings. The sharp knot is an intentional structural limitation,
+    whose identifiability and predictive consequences we inspect rather than
+    attempting to hide with sampler tuning.
     """)
     return
 
@@ -863,8 +896,8 @@ def _(
     mo.stop(not (piecewise_fit_button.value or execute_models))
     with pw_model:
         pw_idata = pm.sample(
-            draws=1000,
-            tune=1000,
+            draws=800,
+            tune=800,
             chains=4,
             random_seed=RANDOM_SEED,
         )
@@ -885,16 +918,23 @@ def _(inference_health, pw_idata, pw_model):
 def _(mo, pw_n_div, pw_summary):
     mo.md(
         f"""
-        **Diagnostics:** {pw_n_div} divergence(s). Across the five
-        parameters the maximum `r_hat` is
-        {float(pw_summary["r_hat"].astype(float).max()):.3f} and the minimum
-        `ess_bulk` is {float(pw_summary["ess_bulk"].min()):.0f}. The
-        chains have converged well enough to interpret — but notice already
-        in the table how *wide* the posterior for `tau` is relative to the
-        others (compare its `sd` and its 89% ETI to `level` or `up`). A
-        converged fit can still be an inadequate one, as the next plots make plain.
+        **Diagnostics:** {pw_n_div} divergence(s). Across all free variables,
+        the maximum `r_hat` is {float(pw_summary["r_hat"].astype(float).max()):.3f}
+        and the minimum bulk ESS is {float(pw_summary["ess_bulk"].min()):.0f}.
+        The full diagnostic table, including tail ESS, determines whether this
+        fit passes the stated inference-health threshold; convergence alone
+        cannot repair a structurally inadequate curve.
         """
     )
+    return
+
+
+@app.cell
+def _(az, pw_idata):
+    az.plot_trace_dist(
+        pw_idata, var_names=["peak", "rise", "decay", "tau", "sigma"], compact=False
+    )
+    az.plot_rank(pw_idata, var_names=["peak", "rise", "decay", "tau", "sigma"])
     return
 
 
@@ -922,11 +962,10 @@ def _(
         dims="time_grid",
         coords={"time_grid": time_grid},
     )
-    _hinge = np.maximum(0.0, time_grid_z - _post["tau"])
+    _pre_peak = np.maximum(_post["tau"] - time_grid_z, 0.0)
+    _post_peak = np.maximum(time_grid_z - _post["tau"], 0.0)
     mu_orig = (
-        _post["level"]
-        + _post["up"] * time_grid_z
-        + _post["down"] * _hinge
+        _post["peak"] - _post["rise"] * _pre_peak - _post["decay"] * _post_peak
     ) * conc_std + conc_mean
 
     pw_fit_mean = mu_orig.mean(dim=("chain", "draw"))
@@ -971,14 +1010,90 @@ def _(
     return (time_grid,)
 
 
+@app.cell
+def _(RANDOM_SEED, pm, posterior_subset, pw_idata, pw_model, results_dir):
+    with pw_model:
+        pw_ppc = pm.sample_posterior_predictive(
+            posterior_subset(pw_idata),
+            var_names=["conc_obs"],
+            random_seed=RANDOM_SEED,
+        )
+    pw_idata["posterior_predictive"] = pw_ppc["posterior_predictive"]
+    pw_idata.to_netcdf(results_dir / "01_piecewise.nc")
+    return (pw_ppc,)
+
+
+@app.cell
+def _(PYMC_BLUE, PYMC_GREEN, conc_z, go, mo, pw_ppc, time_vals):
+    pw_ppc_draws = pw_ppc["posterior_predictive"]["conc_obs"]
+    pw_ppc_mean = pw_ppc_draws.mean(dim=("chain", "draw"))
+    pw_residuals = conc_z - pw_ppc_mean
+    pw_rmse_draws = ((pw_ppc_draws - conc_z) ** 2).mean(dim="observation") ** 0.5
+    pw_ppc_table = {
+        "replicate_RMSE_5.5%": float(pw_rmse_draws.quantile(0.055)),
+        "replicate_RMSE_50%": float(pw_rmse_draws.quantile(0.5)),
+        "replicate_RMSE_94.5%": float(pw_rmse_draws.quantile(0.945)),
+    }
+    print(pw_ppc_table)
+
+    pw_residual_fig = go.Figure()
+    pw_residual_fig.add_hline(y=0, line_dash="dash", line_color="black")
+    pw_residual_fig.add_trace(
+        go.Scatter(
+            x=time_vals,
+            y=pw_residuals.values,
+            mode="markers+lines",
+            marker=dict(color=PYMC_BLUE, size=9),
+            name="observed − PPC mean",
+        )
+    )
+    pw_residual_fig.update_layout(
+        title="Piecewise posterior-predictive residuals show remaining curvature",
+        xaxis_title="Time since dose (hours)",
+        yaxis_title="Standardized concentration residual",
+        template="plotly_white",
+    )
+    pw_ppc_fig = go.Figure()
+    pw_ppc_fig.add_trace(
+        go.Histogram(
+            x=pw_ppc_draws.values.ravel(),
+            histnorm="probability density",
+            marker=dict(color=PYMC_GREEN),
+            opacity=0.55,
+            name="posterior predictive",
+        )
+    )
+    pw_ppc_fig.add_trace(
+        go.Histogram(
+            x=conc_z,
+            histnorm="probability density",
+            marker=dict(color=PYMC_BLUE),
+            opacity=0.55,
+            name="observed",
+        )
+    )
+    pw_ppc_fig.update_layout(
+        barmode="overlay",
+        title="Piecewise observed-data posterior predictive distribution",
+        template="plotly_white",
+    )
+    mo.vstack([pw_ppc_fig, pw_residual_fig])
+    return pw_ppc_table, pw_residuals
+
+
 @app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    This is a real improvement on a flat mean: the fit rises to a peak
-    and then falls, roughly tracking the data. But look closely and three
-    problems stand out — and they are not fixable by tuning this model,
-    they are *baked into its form*. We diagnose them next.
-    """)
+def _(mo, pw_ppc_table, pw_residuals):
+    mo.md(
+        f"""
+        The posterior-predictive RMSE distribution is shown above (median
+        {pw_ppc_table["replicate_RMSE_50%"]:.2f} on the standardized scale).
+        More revealingly, the residual sequence ranges from
+        {float(pw_residuals.min()):.2f} to {float(pw_residuals.max()):.2f}
+        and retains systematic curvature around the sharp knot. This is a
+        model discrepancy, not a sampler-tuning problem: the next section
+        explains why a smooth functional prior is needed.
+        """
+    )
     return
 
 
@@ -1078,90 +1193,76 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.accordion(
-        {
-            "Exercise 1 — change a prior and predict the prior predictive": mo.md(
-                r"""
-                Suppose you tightened the rise-slope prior from
-                `up ~ HalfNormal(2)` to `up ~ HalfNormal(0.2)`. *Before*
-                rerunning, predict what the prior predictive curve plot would
-                look like. Then reason about whether the posterior fit could
-                still reach the observed peak.
-
-                **Solution.** A HalfNormal(0.2) keeps `up` within roughly
-                ±0.4 on the standardized scale, so the *rising* segments in
-                the prior predictive would be far shallower — the fan of
-                curves would climb only gently before the knot. Because the
-                data show a steep early rise (0.74 → 10.5 mg/L in about an
-                hour), such a prior fights the likelihood: the posterior
-                could still pull `up` upward, but a genuinely informative-yet-
-                wrong prior like this would bias the fit toward under-shooting
-                the peak and inflate `sigma_pw` to absorb the misfit. The
-                lesson: prior predictive plots let you catch an over-tight
-                prior before it quietly distorts the posterior.
-                """
-            )
-        }
+    mo.vstack(
+        [
+            mo.md(
+                r"""**Exercise 1 — prior sensitivity.** Suppose you tighten
+                `rise ~ HalfNormal(1)` to `rise ~ HalfNormal(0.2)`. Before
+                rerunning, predict the prior curves and whether the posterior
+                can reach the observed peak."""
+            ),
+            mo.accordion(
+                {
+                    "Solution": mo.md(
+                        r"""The prior curves climb much more slowly. The data
+                        may still pull `rise` upward, but an overly tight prior
+                        biases the fit toward an under-shot peak and causes
+                        `sigma` to absorb misspecification."""
+                    )
+                }
+            ),
+        ]
     )
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.accordion(
-        {
-            "Exercise 2 — widen vs. narrow the τ prior and think about identifiability": mo.md(
-                r"""
-                We used `tau ~ Uniform(t_min, t_max)` over the whole observed
-                window. What would happen to the posterior width of $\tau$ if
-                you instead used a *tight* prior like
-                `tau ~ Normal(peak_guess, 0.1)` centred near the visible
-                peak? Does that make the model better?
-
-                **Solution.** A tight prior would of course produce a narrow
-                *posterior* for $\tau$ — but that narrowness would come from
-                the **prior**, not from information in the data. The
-                likelihood is nearly flat across a range of knot positions
-                (that is what made the wide posterior in the first place), so
-                squeezing $\tau$ with a strong prior just hides the
-                identifiability problem rather than solving it, and makes the
-                result sensitive to where *you* guessed the peak was.
-                Poor identifiability is a property of the model-plus-data, not
-                a bug to be papered over with a confident prior. The honest
-                fix is a model that does not need a single knot location at
-                all.
-                """
-            )
-        }
+    mo.vstack(
+        [
+            mo.md(
+                r"""**Exercise 2 — peak-time identifiability.** What happens
+                to the posterior width of $\tau$ if you replace its observed-
+                range Uniform prior with a tight Normal near the visible
+                peak? Does that make the model better?"""
+            ),
+            mo.accordion(
+                {
+                    "Solution": mo.md(
+                        r"""The interval narrows chiefly because of the prior,
+                        not because the data identify the knot. The result
+                        becomes sensitive to the chosen peak guess; it does
+                        not repair the piecewise model's limitation."""
+                    )
+                }
+            ),
+        ]
     )
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.accordion(
-        {
-            "Exercise 3 — interpret a diagnostic readout": mo.md(
-                r"""
-                Imagine a rerun of the piecewise model reported: `r_hat` for
-                `tau` = 1.06, `ess_bulk` for `tau` = 55, and 40 divergences,
-                while `level`, `up`, and `sigma_pw` all looked fine. What
-                would you conclude, and what would you try first?
-
-                **Solution.** The trouble is localized to `tau`: an `r_hat`
-                of 1.06 means the chains have not agreed on its distribution,
-                an `ess_bulk` of 55 means you effectively have only a few
-                dozen independent draws of it, and 40 divergences point to
-                the sampler struggling with the kinked geometry the data
-                barely identify. Do **not** make a peak-time statement from
-                this run. First inspect prior implications and the
-                identifiability of the knot and slopes; a parameter this hard
-                to sample is often a parameter the data barely identify. That
-                recurring difficulty is another nudge toward the smoother,
-                better-behaved GP formulation.
-                """
-            )
-        }
+    mo.vstack(
+        [
+            mo.md(
+                r"""**Exercise 3 — diagnose geometry.** A rerun reports
+                `r_hat(tau)=1.06`, `ess_bulk(tau)=55`, and 40 divergences,
+                while `peak`, `rise`, and `sigma` look better. What follows,
+                and what should you inspect first?"""
+            ),
+            mo.accordion(
+                {
+                    "Solution": mo.md(
+                        r"""Do not make a peak-time claim. Inspect the prior
+                        implications and the knot/slopes' identification:
+                        the sharp-knot geometry and sparse peak information
+                        are the source problem, rather than a reason to tune
+                        the sampler."""
+                    )
+                }
+            ),
+        ]
     )
     return
 
