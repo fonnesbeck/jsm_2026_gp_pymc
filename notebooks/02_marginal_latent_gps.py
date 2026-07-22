@@ -381,6 +381,67 @@ def _(mo, prior_draws, y):
 def _(mo):
     mo.md(
         r"""
+        ### Conjugacy: why the latent function integrates out
+
+        `pm.gp.Marginal` earns its name from a piece of algebra worth seeing
+        once. Write the model at the observed inputs $X$ as a latent Gaussian
+        vector $\mathbf f \sim \mathcal N(\mathbf m,\ K)$ with $K = k(X, X)$,
+        and a Gaussian observation layer
+        $\mathbf y \mid \mathbf f \sim \mathcal N(\mathbf f,\ \sigma^2 I)$.
+        Because *both* pieces are Gaussian, the joint over
+        $(\mathbf f, \mathbf y)$ is Gaussian, and a Gaussian integrated over one
+        of its blocks is Gaussian again — the **marginalization** property from
+        Notebook 1. Integrating $\mathbf f$ out gives the **marginal
+        likelihood** in closed form:
+
+        $$\mathbf y \sim \mathcal N\big(\mathbf m,\ K + \sigma^2 I\big).$$
+
+        No latent $\mathbf f$ appears — the function values have been absorbed
+        into the $n \times n$ covariance $K + \sigma^2 I$. This is exactly what
+        `.marginal_likelihood("y", X=X, y=y, sigma=sigma)` evaluates. The only
+        free unknowns left are the handful of hyperparameters
+        $(\ell, \eta, \sigma)$ plus the two mean-function coefficients — **five
+        scalars**, instead of $\mathbf f$'s 11 values *and* the hyperparameters.
+        """
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(
+        r"""
+        The same conjugacy delivers predictions in closed form. For test inputs
+        $X_*$, the posterior over the latent function is Gaussian with
+
+        $$\mathbb E[\mathbf f_* \mid \mathbf y]
+        = \mathbf m_* + K_*(K + \sigma^2 I)^{-1}(\mathbf y - \mathbf m),$$
+
+        $$\operatorname{Cov}[\mathbf f_* \mid \mathbf y]
+        = K_{**} - K_*(K + \sigma^2 I)^{-1}K_*^\top,$$
+
+        with $K_* = k(X_*, X)$ and $K_{**} = k(X_*, X_*)$ — the identical
+        conditioning formula you applied by hand in Notebook 1, now with a
+        learned mean function $\mathbf m$ subtracted off first. Two consequences
+        we lean on below:
+
+        - **Every hyperparameter draw yields an *exact* predictive Gaussian.**
+          There is no Monte-Carlo error in $\mathbf f$ given
+          $(\ell, \eta, \sigma)$; the only thing we sample over is the
+          hyperparameters themselves.
+        - **The $(K + \sigma^2 I)^{-1}$ solve is $O(n^3)$.** With $n = 11$ that
+          is nothing, but it is the exact cost that motivates the sparse and
+          HSGP approximations in Hour 4. Conjugacy buys exactness at a cubic
+          price.
+        """
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(
+        r"""
         ### MAP vs. full posterior
 
         `pm.gp.Marginal` only ever samples the **hyperparameters**
@@ -445,6 +506,56 @@ def _(
         expected for a fairly well-identified, low-dimensional hyperparameter
         posterior — but the full posterior additionally tells us the
         *uncertainty* around that estimate, which MAP alone cannot.
+        """
+    )
+    return
+
+
+@app.cell
+def _(map_estimate, pl, summary):
+    _params = ["ell", "eta", "sigma", "beta_mean", "intercept_mean"]
+    map_vs_post = pl.DataFrame(
+        {
+            "parameter": _params,
+            "MAP": [round(float(map_estimate[p]), 3) for p in _params],
+            "posterior_mean": [
+                round(float(summary.loc[p, "mean"]), 3) for p in _params
+            ],
+            "posterior_sd": [round(float(summary.loc[p, "sd"]), 3) for p in _params],
+        }
+    )
+    map_vs_post
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(
+        r"""
+        The table lines up the two point summaries for all five
+        hyperparameters. They agree to within a posterior standard deviation
+        here, which is the *good* case: a low-dimensional, well-identified
+        hyperparameter posterior that is roughly symmetric, so its mode (MAP)
+        and its mean nearly coincide. When should you trust MAP, and when not?
+
+        - **MAP is appropriate** as a fast first look, for initialization, or
+          when the hyperparameter posterior is tight and unimodal and you
+          genuinely only need a point estimate. It is a single optimization —
+          cheap and deterministic.
+        - **MAP misses** everything about the *shape* of the posterior. It
+          reports no uncertainty, so it cannot tell you the lengthscale is only
+          known to within some range; it sits at the mode, which for a skewed
+          posterior (lengthscales often are) can be far from the mean; it can
+          settle on a local optimum; and — the subtle one — a MAP *prediction*
+          plugs in a single hyperparameter value, so its predictive band
+          understates uncertainty because it ignores the spread over
+          $(\ell, \eta, \sigma)$ entirely.
+
+        Full MCMC propagates hyperparameter uncertainty into every prediction:
+        we draw many $(\ell, \eta, \sigma)$, form the exact predictive Gaussian
+        for each (conjugacy again), and mix them. That mixture is wider — and
+        more honest — than any single MAP curve, which is why the fit below uses
+        the full posterior rather than `map_estimate`.
         """
     )
     return
@@ -565,6 +676,47 @@ def _(mo):
         far more faithfully than the naive fit.
         """
     )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(
+        r"""
+        ### What `pred_noise` actually changes
+
+        The two bands differ by exactly one term, and it is worth being precise
+        about which. Writing the predictive variance at a test point $x_*$:
+
+        - `pred_noise=False` returns $\operatorname{Var}[f(x_*) \mid \mathbf y]$
+          — the uncertainty in the *latent function* $f$ at $x_*$. Use this when
+          you care about the underlying smooth curve ("what is the true
+          concentration trajectory?").
+        - `pred_noise=True` returns
+          $\operatorname{Var}[f(x_*) \mid \mathbf y] + \sigma^2$ — the latent
+          uncertainty *plus* the observation-noise variance. Use this when you
+          care about a *new measurement* ("what will the assay read if I draw
+          blood at 5 hours?"), because a real measurement carries the same
+          $\sigma$ scatter the training points did.
+
+        The gap between the bands is therefore a **constant $\sigma^2$ in
+        variance** — uniform across the whole grid, since observation noise does
+        not depend on *where* you predict. That is why the outer band sits a
+        fixed vertical distance outside the inner one even where the data are
+        dense and the latent band is tight. The cell below reads off that
+        constant gap in the original mg/L units.
+        """
+    )
+    return
+
+
+@app.cell
+def _(conc_std, summary):
+    sigma_post_mean = float(summary.loc["sigma", "mean"])
+    noise_var_mgL = (sigma_post_mean * conc_std) ** 2
+    print(f"Posterior-mean sigma (standardized): {sigma_post_mean:.3f}")
+    print(f"Constant variance gap between the bands: {noise_var_mgL:.3f} (mg/L)^2")
+    print(f"  i.e. a noise standard deviation of {sigma_post_mean * conc_std:.3f} mg/L")
     return
 
 
@@ -696,6 +848,67 @@ def _(
 
 @app.cell(hide_code=True)
 def _(mo):
+    mo.accordion(
+        {
+            "Exercise — what does the linear mean function buy us?": mo.md(
+                r"""
+                Suppose you removed the `pm.gp.mean.Linear` and used a
+                *zero-mean* GP on the same `log1p(time)` input. Predict what
+                would change in (a) the fit within the observed data and (b) the
+                extrapolation beyond 24 hours.
+
+                **Solution.** Within the data the fit would look *similar* — a
+                flexible GP can represent the trend through its covariance
+                alone, so the posterior mean still traces rise–peak–decay. The
+                difference shows up in **extrapolation and in how hard the GP has
+                to work**. With a zero mean, everything past the last point
+                reverts toward 0 (the standardized output mean, i.e. the overall
+                average concentration) rather than toward a *sloped* line; and
+                the lengthscale/amplitude must stretch to explain the global
+                downward drift that the linear mean would otherwise soak up
+                cheaply. A mean function encodes the part of the trend you can
+                name — here, "log-concentration falls roughly linearly in
+                log-time" — leaving the GP to model only the residual curvature,
+                which usually yields tighter, more stable hyperparameter
+                posteriors.
+                """
+            )
+        }
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "Exercise — would ExpQuad fit better than Matérn 5/2?": mo.md(
+                r"""
+                We used a `Matern52` kernel. The `ExpQuad` (squared-exponential)
+                kernel is smoother still — infinitely differentiable, versus
+                Matérn 5/2's two derivatives. Would swapping it in improve this
+                pharmacokinetic fit? Reason about it before trying.
+
+                **Solution.** Probably not meaningfully, and possibly worse.
+                ExpQuad assumes the underlying function is *extremely* smooth,
+                but real absorption/elimination curves have a fairly sharp early
+                rise that an over-smooth kernel tends to round off or overshoot,
+                especially with a single global lengthscale. Matérn 5/2 is the
+                common default for physical processes precisely because it allows
+                a little more local "give" while still looking continuous. The
+                rigorous way to choose is out-of-sample predictive accuracy
+                (LOO), which is beyond this intro course — but the intuition is:
+                *match the kernel's assumed smoothness to the process*, and when
+                unsure, Matérn 5/2 is a safer default than ExpQuad.
+                """
+            )
+        }
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
     mo.md(
         r"""
         ## Part B: Latent Poisson GP on coal-mining disasters
@@ -772,6 +985,44 @@ def _(mo):
         plus hyperparameters, rather than 2–5 hyperparameters alone — but
         it is the only exact option once the likelihood leaves the Gaussian
         family.
+        """
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(
+        r"""
+        ### From latent function to disaster rate: the exp link
+
+        It is worth tracing the generative chain the model encodes, because it
+        is the template for *every* non-Gaussian GP. For each year $t_i$:
+
+        1. A **latent function value** $f(t_i)$ is drawn jointly from the GP
+           prior — these are the 112 correlated values `f = gp.prior("f", X=t)`.
+           On this scale $f$ is unconstrained: it can be any real number,
+           positive or negative, and neighbouring years are correlated through
+           the Matérn kernel.
+        2. An **exp link** maps it to a positive rate,
+           $\lambda(t_i) = \exp\!\big(f(t_i)\big)$. Exponentiating guarantees
+           $\lambda > 0$ (a Poisson mean must be positive) and makes the GP a
+           model of the **log-rate**, so a straight-line drop in $f$ is a
+           constant *proportional* decline in the rate — the natural scale for
+           counts.
+        3. A **Poisson likelihood** turns the rate into observed counts,
+           $y_i \sim \mathrm{Poisson}\big(\lambda(t_i)\big)$.
+
+        Contrast this directly with Part A. There, the link was the identity and
+        the noise was Gaussian, so step 1's latent values integrated out and we
+        sampled only five hyperparameters. Here the exp link and Poisson
+        likelihood break conjugacy: there is no closed form for
+        $\int \prod_i \mathrm{Poisson}(y_i \mid e^{f_i})\,
+        \mathcal N(\mathbf f \mid \mathbf 0, K)\, d\mathbf f$, so we have no
+        choice but to **keep $\mathbf f$ in the model and let NUTS explore all
+        112 values jointly** with $(\ell, \eta)$. Carrying $\mathbf f$ explicitly
+        is the price of leaving the Gaussian family — and the reason latent GPs
+        sample more slowly than marginal ones.
         """
     )
     return
@@ -996,6 +1247,105 @@ def _(PYMC_BLUE, az, coal_idata, disaster_counts, go, np, year_vals):
 def _(mo):
     mo.md(
         r"""
+        ### The posterior is a distribution over rate *functions*
+
+        The HDI band above summarizes the posterior, but it can hide that each
+        posterior draw is a whole *function*. Plotting sixty individual draws of
+        $\exp(f)$ makes the object concrete: the model is uncertain not about a
+        few numbers but about the entire trajectory, and the draws fan out where
+        data are sparse (the early years, few disasters to pin the rate) and
+        pull together where the counts are more informative.
+        """
+    )
+    return
+
+
+@app.cell
+def _(PYMC_GREEN, coal_idata, go, np, year_vals):
+    _rate_draws = coal_idata["posterior"]["rate"].values.reshape(-1, len(year_vals))
+    _rng = np.random.default_rng(1)
+    spaghetti_fig = go.Figure()
+    for _i in _rng.choice(_rate_draws.shape[0], size=60, replace=False):
+        spaghetti_fig.add_trace(
+            go.Scatter(
+                x=year_vals,
+                y=_rate_draws[_i],
+                mode="lines",
+                line=dict(color=PYMC_GREEN, width=1),
+                opacity=0.15,
+                showlegend=False,
+            )
+        )
+    spaghetti_fig.update_layout(
+        title="Sixty posterior draws of the rate exp(f) — the posterior over functions",
+        xaxis_title="Year",
+        yaxis_title="Disasters / year (rate)",
+        template="plotly_white",
+    )
+    spaghetti_fig
+    return
+
+
+@app.cell
+def _(az, coal_idata, np, year_vals):
+    _rate = coal_idata["posterior"]["rate"].values.reshape(-1, len(year_vals))
+
+    def _rate_at(year):
+        idx = int(np.argmin(np.abs(year_vals - year)))
+        col = _rate[:, idx]
+        return col.mean(), az.hdi(col, prob=0.89)
+
+    rate_1851 = _rate_at(1851)
+    rate_1900 = _rate_at(1900)
+    rate_1962 = _rate_at(1962)
+    pct_decline = 100 * (1 - rate_1962[0] / rate_1851[0])
+    print(
+        f"Mean rate 1851: {rate_1851[0]:.2f} /yr "
+        f"(89% HDI {rate_1851[1][0]:.2f}-{rate_1851[1][1]:.2f})"
+    )
+    print(
+        f"Mean rate 1900: {rate_1900[0]:.2f} /yr "
+        f"(89% HDI {rate_1900[1][0]:.2f}-{rate_1900[1][1]:.2f})"
+    )
+    print(
+        f"Mean rate 1962: {rate_1962[0]:.2f} /yr "
+        f"(89% HDI {rate_1962[1][0]:.2f}-{rate_1962[1][1]:.2f})"
+    )
+    print(f"Overall decline 1851 to 1962: {pct_decline:.0f}%")
+    return pct_decline, rate_1851, rate_1900, rate_1962
+
+
+@app.cell(hide_code=True)
+def _(mo, pct_decline, rate_1851, rate_1900, rate_1962):
+    mo.md(
+        f"""
+        **What the trajectory says about the history.** The posterior puts the
+        disaster rate near {rate_1851[0]:.1f} per year in 1851, roughly
+        {rate_1900[0]:.1f} by 1900, and about {rate_1962[0]:.1f} by 1962 — an
+        overall decline of about {pct_decline:.0f}%. Crucially, the model was
+        *not told* to look for a change around 1890–1900; it inferred a smooth,
+        sustained drop concentrated in the late-19th-century decades directly
+        from the counts. Historically this tracks the tightening of British
+        mine-safety regulation and inspection over that period. Two modelling
+        points worth stressing to a class:
+
+        - The GP reports the decline **with uncertainty everywhere** (the HDIs
+          above), rather than a single point estimate of one changepoint year.
+          It stays agnostic about *whether* the change was abrupt or gradual and
+          lets the data decide — and the data prefer gradual.
+        - Because $f$ is the log-rate, the decline reads naturally as
+          *multiplicative*: the rate roughly halved and then halved again across
+          the record, a structure a linear-in-rate model would describe far less
+          gracefully.
+        """
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(
+        r"""
         The latent rate shows a clear decline over the period with no
         sharp changepoint imposed — the GP infers the shape of the decline
         (which looks like it happens over some decades around the turn of
@@ -1178,6 +1528,98 @@ def _(
                 ]
             )
         }
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "Exercise — does a Poisson likelihood capture the spread?": mo.md(
+                r"""
+                The posterior predictive check plotted the 89% band and it
+                covered the data. A sterner test: a Poisson likelihood forces
+                $\operatorname{Var}[y] = \mathbb E[y]$ (mean equals variance).
+                Sketch how you would check whether the coal counts are
+                *over-dispersed* relative to Poisson, and what you would switch
+                to if they were.
+
+                **Solution.** Compare a dispersion statistic between the observed
+                series and the posterior predictive draws — e.g. the ratio of
+                sample variance to sample mean — by overlaying the *distribution*
+                of that ratio across posterior predictive datasets against the
+                observed value (a posterior-predictive-check style comparison).
+                If the observed counts scatter more than Poisson allows, the
+                observed variance/mean ratio would sit in the upper tail of the
+                predictive distribution. The standard fix is a likelihood with a
+                free dispersion parameter — a **Negative Binomial** GP (same exp
+                link, same latent $f$), which adds an over-dispersion parameter
+                and reduces to Poisson as that parameter grows. Here the Poisson
+                fit looks adequate, but this is the first thing to check for
+                count GPs in the wild.
+                """
+            )
+        }
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.accordion(
+        {
+            "Exercise — could we have forced this into a marginal GP?": mo.md(
+                r"""
+                A tempting shortcut: transform the counts (say $\sqrt{y}$ or
+                $\log(y+1)$) to make them roughly Gaussian, then use the fast
+                `pm.gp.Marginal` from Part A instead of the slower latent GP.
+                When is that reasonable, and what does it cost *here*?
+
+                **Solution.** It is a real technique — a variance-stabilizing
+                transform plus a Gaussian GP — and for *large* counts it works
+                passably, because a Poisson with a big mean is approximately
+                Gaussian on the $\sqrt{\cdot}$ scale. But the coal counts are
+                *small* (many years are 0, 1, or 2), where that approximation is
+                poor: $\sqrt{0}, \sqrt{1}, \sqrt{2}$ are badly non-Gaussian, the
+                transform cannot represent genuine zeros cleanly, and you throw
+                away the honest discrete count likelihood. You would gain speed
+                (marginalizing $f$) at the cost of a mis-specified observation
+                model right where the data are most informative about the low
+                rate. For small counts the latent Poisson GP is the correct tool;
+                the marginal shortcut is only defensible when counts are
+                uniformly large.
+                """
+            )
+        }
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(
+        r"""
+        ## Where we are, and what's next
+
+        You have now fit both faces of GP inference on real data. In the
+        **marginal** (conjugate) case, a Gaussian likelihood let PyMC integrate
+        the latent function out analytically: `pm.gp.Marginal` sampled only a
+        handful of hyperparameters, predictions came in closed form, and MAP and
+        full MCMC nearly agreed. In the **latent** (non-conjugate) case, a
+        Poisson likelihood broke conjugacy, so `pm.gp.Latent` carried all 112
+        latent function values through the exp link and NUTS sampled them jointly
+        with the kernel hyperparameters — slower, but exact and fully
+        uncertainty-aware.
+
+        The dividing question is always the likelihood: **Gaussian noise ⇒ reach
+        for `Marginal`; anything else (counts, binary, heavy tails) ⇒ reach for
+        `Latent`.** Both share the same covariance-function vocabulary, which is
+        exactly what **Notebook 3** expands next — a tour of kernels (the Matérn
+        family, periodic, rational-quadratic, linear), how to *combine* them
+        additively and multiplicatively, GPs on multi-dimensional inputs, and
+        hierarchical GPs that share structure across groups.
+        """
     )
     return
 
