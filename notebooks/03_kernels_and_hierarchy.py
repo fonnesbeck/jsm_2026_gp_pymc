@@ -46,7 +46,12 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     from pathlib import Path
-    from inference_contract import eti, inference_health, posterior_subset
+    from inference_contract import (
+        eti,
+        inference_health,
+        posterior_subset,
+        sample_fresh_model_predictions,
+    )
     from time import perf_counter
 
     import arviz as az
@@ -383,51 +388,54 @@ def _(mo):
 
 
 @app.cell
-def _(pm, tide_hours_std):
-    SEMI_PERIOD_HOURS = 12.42  # M2 lunar semidiurnal constituent
-    DIURNAL_PERIOD_HOURS = 23.93  # K1 lunar diurnal constituent
-    PERIODIC_LS_STD = 0.5  # fixed within-cycle shape (standardized time units)
-    semi_period_std = SEMI_PERIOD_HOURS / tide_hours_std
-    diurnal_period_std = DIURNAL_PERIOD_HOURS / tide_hours_std
+def _(X_tide, np, pm, tide_hours_std, y_tide):
+    _semi_period_std = 12.42 / tide_hours_std
+    _diurnal_period_std = 23.93 / tide_hours_std
+    _tide_coords = {
+        "observation": np.arange(len(y_tide)),
+        "feature": ["time"],
+    }
 
-    with pm.Model() as tide_model:
-        ell_trend = pm.InverseGamma("ell_trend", alpha=5, beta=5)
-        eta_trend = pm.HalfNormal("eta_trend", sigma=1)
-        cov_trend = eta_trend**2 * pm.gp.cov.Matern52(1, ls=ell_trend)
+    def build_tide_model(X_pred=None):
+        _coords = dict(_tide_coords)
+        if X_pred is not None:
+            _coords["prediction"] = np.arange(len(X_pred))
+        with pm.Model(coords=_coords) as tide_model:
+            _X_data = pm.Data("X", X_tide, dims=("observation", "feature"))
+            _tide_level_data = pm.Data("tide_level", y_tide, dims="observation")
+            _ell_trend = pm.InverseGamma("ell_trend", alpha=5, beta=5)
+            _eta_trend = pm.HalfNormal("eta_trend", sigma=1)
+            _cov_trend = _eta_trend**2 * pm.gp.cov.Matern52(1, ls=_ell_trend)
+            _eta_semi = pm.HalfNormal("eta_semi", sigma=1)
+            _cov_semi = _eta_semi**2 * pm.gp.cov.Periodic(
+                1, period=_semi_period_std, ls=0.5
+            )
+            _eta_diurnal = pm.HalfNormal("eta_diurnal", sigma=1)
+            _cov_diurnal = _eta_diurnal**2 * pm.gp.cov.Periodic(
+                1, period=_diurnal_period_std, ls=0.5
+            )
+            _sigma_tide = pm.HalfNormal("sigma_tide", sigma=0.5)
+            _gp_tide = pm.gp.Marginal(
+                cov_func=_cov_trend + _cov_semi + _cov_diurnal
+            )
+            _gp_tide.marginal_likelihood(
+                "y",
+                X=_X_data,
+                y=_tide_level_data,
+                sigma=_sigma_tide,
+                dims="observation",
+            )
+            if X_pred is not None:
+                _X_pred = pm.Data(
+                    "X_pred", X_pred, dims=("prediction", "feature")
+                )
+                _gp_tide.conditional(
+                    "f_tide_pred", _X_pred, dims="prediction"
+                )
+        return tide_model
 
-        eta_semi = pm.HalfNormal("eta_semi", sigma=1)
-        cov_semi = eta_semi**2 * pm.gp.cov.Periodic(
-            1, period=semi_period_std, ls=PERIODIC_LS_STD
-        )
-
-        eta_diurnal = pm.HalfNormal("eta_diurnal", sigma=1)
-        cov_diurnal = eta_diurnal**2 * pm.gp.cov.Periodic(
-            1, period=diurnal_period_std, ls=PERIODIC_LS_STD
-        )
-
-        cov_tide = cov_trend + cov_semi + cov_diurnal  # additive (OR) composition
-        sigma_tide = pm.HalfNormal("sigma_tide", sigma=0.5)
-
-        gp_tide = pm.gp.Marginal(cov_func=cov_tide)
-    return gp_tide, sigma_tide, tide_model
-
-
-@app.cell
-def _(X_tide, gp_tide, np, pm, sigma_tide, tide_model, y_tide):
-    with tide_model:
-        tide_model.add_coords(
-            {"observation": np.arange(len(y_tide)), "feature": ["time"]}
-        )
-        X_data = pm.Data("X", X_tide, dims=("observation", "feature"))
-        tide_level_data = pm.Data("tide_level", y_tide, dims="observation")
-        gp_tide.marginal_likelihood(
-            "y",
-            X=X_data,
-            y=tide_level_data,
-            sigma=sigma_tide,
-            dims="observation",
-        )
-    return
+    tide_model = build_tide_model()
+    return build_tide_model, tide_model
 
 
 @app.cell(hide_code=True)
@@ -538,18 +546,22 @@ def _(
 
 
 @app.cell
-def _(az, tide_idata):
-    tide_n_div = tide_idata["sample_stats"]["diverging"].sum().item()
+def _(inference_health, tide_idata, tide_model):
+    tide_summary, tide_health_passed = inference_health(tide_idata, tide_model)
+    tide_n_div = tide_summary.attrs["divergences"]
     tide_n_draws_total = (
         tide_idata["posterior"].sizes["chain"] * tide_idata["posterior"].sizes["draw"]
     )
-    tide_summary = az.summary(tide_idata["posterior"])
     tide_min_ess_bulk = float(tide_summary["ess_bulk"].min())
     tide_min_ess_tail = float(tide_summary["ess_tail"].min())
     tide_max_rhat = float(tide_summary["r_hat"].astype(float).max())
-    print(f"Divergences: {tide_n_div} / {tide_n_draws_total}")
+    print(
+        f"Divergences: {tide_n_div} / {tide_n_draws_total}; "
+        f"health passed: {tide_health_passed}"
+    )
     tide_summary
     return (
+        tide_health_passed,
         tide_max_rhat,
         tide_min_ess_bulk,
         tide_min_ess_tail,
@@ -561,6 +573,7 @@ def _(az, tide_idata):
 @app.cell(hide_code=True)
 def _(
     mo,
+    tide_health_passed,
     tide_max_rhat,
     tide_min_ess_bulk,
     tide_min_ess_tail,
@@ -574,25 +587,27 @@ def _(
         {tide_n_draws_total} draws in {tide_sample_seconds:.1f}s. Minimum
         `ess_bulk` is {tide_min_ess_bulk:.0f} and minimum `ess_tail` is
         {tide_min_ess_tail:.0f} — both above the 400 threshold — and
-        maximum `r_hat` is {tide_max_rhat:.3f}. Safe to interpret.
+        maximum `r_hat` is {tide_max_rhat:.3f}. Health gate passed:
+        **{tide_health_passed}**.
         """
     )
     return
 
 
 @app.cell
-def _(X_tide, gp_tide, tide_model):
-    with tide_model:
-        f_tide_pred = gp_tide.conditional("f_tide_pred", X_tide)
-    return
-
-
-@app.cell
-def _(RANDOM_SEED, pm, tide_idata, tide_model):
-    with tide_model:
-        tide_ppc = pm.sample_posterior_predictive(
-            tide_idata, var_names=["f_tide_pred"], random_seed=RANDOM_SEED
-        )
+def _(
+    RANDOM_SEED,
+    X_tide,
+    build_tide_model,
+    sample_fresh_model_predictions,
+    tide_idata,
+):
+    tide_ppc = sample_fresh_model_predictions(
+        tide_idata,
+        lambda: build_tide_model(X_tide),
+        var_names=["f_tide_pred"],
+        random_seed=RANDOM_SEED,
+    )
     return (tide_ppc,)
 
 
@@ -608,7 +623,7 @@ def _(
     tide_level_std,
     tide_ppc,
 ):
-    tide_fit = tide_ppc["posterior_predictive"]["f_tide_pred"]
+    tide_fit = tide_ppc["predictions"]["f_tide_pred"]
     tide_fit = tide_fit.rename({tide_fit.dims[-1]: "tide_hour"}).assign_coords(
         tide_hour=tide_hours
     )
@@ -822,29 +837,47 @@ def _(mo):
 
 @app.cell
 def _(X_places, np, pm, y_places):
-    coords = {
+    _places_coords = {
         "county": np.arange(len(y_places)),
         "coordinate": ["longitude", "latitude"],
     }
-    with pm.Model(coords=coords) as places_model:
-        county_locations = pm.Data(
-            "county_locations", X_places, dims=("county", "coordinate")
-        )
-        diabetes_data = pm.Data("diabetes", y_places, dims="county")
-        ell_places = pm.InverseGamma("ell", alpha=5, beta=5, shape=2)  # ARD: (lon, lat)
-        eta_places = pm.HalfNormal("eta", sigma=2)
-        cov_places = eta_places**2 * pm.gp.cov.Matern52(2, ls=ell_places)
-        sigma_places = pm.HalfNormal("sigma_places", sigma=1)
 
-        gp_places = pm.gp.Marginal(cov_func=cov_places)
-        gp_places.marginal_likelihood(
-            "y",
-            X=county_locations,
-            y=diabetes_data,
-            sigma=sigma_places,
-            dims="county",
-        )
-    return gp_places, places_model
+    def build_places_model(X_pred=None):
+        _coords = dict(_places_coords)
+        if X_pred is not None:
+            _coords["prediction"] = np.arange(len(X_pred))
+        with pm.Model(coords=_coords) as places_model:
+            _county_locations = pm.Data(
+                "county_locations", X_places, dims=("county", "coordinate")
+            )
+            _diabetes_data = pm.Data("diabetes", y_places, dims="county")
+            _ell_places = pm.InverseGamma("ell", alpha=5, beta=5, shape=2)
+            _eta_places = pm.HalfNormal("eta", sigma=2)
+            _sigma_places = pm.HalfNormal("sigma_places", sigma=1)
+            _gp_places = pm.gp.Marginal(
+                cov_func=_eta_places**2
+                * pm.gp.cov.Matern52(2, ls=_ell_places)
+            )
+            _gp_places.marginal_likelihood(
+                "y",
+                X=_county_locations,
+                y=_diabetes_data,
+                sigma=_sigma_places,
+                dims="county",
+            )
+            if X_pred is not None:
+                _county_prediction_locations = pm.Data(
+                    "prediction_locations",
+                    X_pred,
+                    dims=("prediction", "coordinate"),
+                )
+                _gp_places.conditional(
+                    "f_grid", _county_prediction_locations, dims="prediction"
+                )
+        return places_model
+
+    places_model = build_places_model()
+    return build_places_model, places_model
 
 
 @app.cell(hide_code=True)
@@ -965,19 +998,25 @@ def _(
 
 
 @app.cell
-def _(az, places_idata):
-    places_n_div = places_idata["sample_stats"]["diverging"].sum().item()
+def _(inference_health, places_idata, places_model):
+    places_summary, places_health_passed = inference_health(
+        places_idata, places_model
+    )
+    places_n_div = places_summary.attrs["divergences"]
     places_n_draws_total = (
         places_idata["posterior"].sizes["chain"]
         * places_idata["posterior"].sizes["draw"]
     )
-    places_summary = az.summary(places_idata["posterior"])
     places_min_ess_bulk = float(places_summary["ess_bulk"].min())
     places_min_ess_tail = float(places_summary["ess_tail"].min())
     places_max_rhat = float(places_summary["r_hat"].astype(float).max())
-    print(f"Divergences: {places_n_div} / {places_n_draws_total}")
+    print(
+        f"Divergences: {places_n_div} / {places_n_draws_total}; "
+        f"health passed: {places_health_passed}"
+    )
     places_summary
     return (
+        places_health_passed,
         places_max_rhat,
         places_min_ess_bulk,
         places_min_ess_tail,
@@ -989,6 +1028,7 @@ def _(az, places_idata):
 @app.cell(hide_code=True)
 def _(
     mo,
+    places_health_passed,
     places_max_rhat,
     places_min_ess_bulk,
     places_min_ess_tail,
@@ -1002,8 +1042,8 @@ def _(
         {places_n_draws_total} draws in {places_sample_seconds:.1f}s.
         Minimum `ess_bulk` is {places_min_ess_bulk:.0f} and minimum
         `ess_tail` is {places_min_ess_tail:.0f} — both above the 400
-        threshold — and maximum `r_hat` is {places_max_rhat:.3f}. Safe to
-        interpret.
+        threshold — and maximum `r_hat` is {places_max_rhat:.3f}. Health gate
+        passed: **{places_health_passed}**.
 
         The two ARD lengthscales (see table above, `ell[0]` = longitude,
         `ell[1]` = latitude) need not agree — if their posteriors are well
@@ -1033,7 +1073,6 @@ def _(mo):
 
 @app.cell
 def _(
-    gp_places,
     np,
     places_lat,
     places_lat_mean,
@@ -1041,31 +1080,34 @@ def _(
     places_lon,
     places_lon_mean,
     places_lon_std,
-    places_model,
 ):
     grid_n = 20
     lon_grid = np.linspace(places_lon.min(), places_lon.max(), grid_n)
     lat_grid = np.linspace(places_lat.min(), places_lat.max(), grid_n)
     LON_MESH, LAT_MESH = np.meshgrid(lon_grid, lat_grid)
-
     X_grid = np.column_stack(
         [
             (LON_MESH.ravel() - places_lon_mean) / places_lon_std,
             (LAT_MESH.ravel() - places_lat_mean) / places_lat_std,
         ]
     )
-
-    with places_model:
-        f_grid = gp_places.conditional("f_grid", X_grid)
-    return LAT_MESH, LON_MESH, grid_n
+    return LAT_MESH, LON_MESH, X_grid, grid_n
 
 
 @app.cell
-def _(RANDOM_SEED, places_idata, places_model, pm):
-    with places_model:
-        places_grid_ppc = pm.sample_posterior_predictive(
-            places_idata, var_names=["f_grid"], random_seed=RANDOM_SEED
-        )
+def _(
+    RANDOM_SEED,
+    X_grid,
+    build_places_model,
+    places_idata,
+    sample_fresh_model_predictions,
+):
+    places_grid_ppc = sample_fresh_model_predictions(
+        places_idata,
+        lambda: build_places_model(X_grid),
+        var_names=["f_grid"],
+        random_seed=RANDOM_SEED,
+    )
     return (places_grid_ppc,)
 
 
@@ -1085,7 +1127,7 @@ def _(
     places_lon,
 ):
     grid_mu = (
-        places_grid_ppc["posterior_predictive"]["f_grid"]
+        places_grid_ppc["predictions"]["f_grid"]
         .mean(dim=["chain", "draw"])
         .values
     )
@@ -1296,28 +1338,48 @@ def _(mo):
 
 @app.cell
 def _(day_z, np, pitcher_idx_num, pitchers, pm, spin_z):
-    spin_coords = {"pitcher": pitchers, "obs": np.arange(len(spin_z))}
-    with pm.Model(coords=spin_coords) as spin_model:
-        day_data = pm.Data("day", day_z, dims="obs")
-        pitcher_data = pm.Data("pitcher_idx", pitcher_idx_num, dims="obs")
-        spin_data = pm.Data("spin_rate", spin_z, dims="obs")
+    _spin_coords = {"pitcher": pitchers, "obs": np.arange(len(spin_z))}
 
-        ell_pop = pm.InverseGamma("ell_pop", alpha=5, beta=5)
-        eta_pop = pm.HalfNormal("eta_pop", sigma=1)
-        cov_pop = eta_pop**2 * pm.gp.cov.Matern52(1, ls=ell_pop)
-        gp_pop = pm.gp.Latent(cov_func=cov_pop)
-        f_pop = gp_pop.prior("f_pop", X=day_data[:, None], dims="obs")
+    def build_spin_model(day_grid_z=None):
+        _coords = dict(_spin_coords)
+        if day_grid_z is not None:
+            _coords["prediction"] = np.arange(len(day_grid_z))
+        with pm.Model(coords=_coords) as spin_model:
+            _day_data = pm.Data("day", day_z, dims="obs")
+            _pitcher_data = pm.Data("pitcher_idx", pitcher_idx_num, dims="obs")
+            _spin_data = pm.Data("spin_rate", spin_z, dims="obs")
+            _ell_pop = pm.InverseGamma("ell_pop", alpha=5, beta=5)
+            _eta_pop = pm.HalfNormal("eta_pop", sigma=1)
+            _gp_pop = pm.gp.Latent(
+                cov_func=_eta_pop**2 * pm.gp.cov.Matern52(1, ls=_ell_pop)
+            )
+            _f_pop = _gp_pop.prior("f_pop", X=_day_data[:, None], dims="obs")
+            _sigma_dev = pm.HalfNormal("sigma_dev", sigma=0.5)
+            _offset = pm.Normal("offset", 0, 1, dims="pitcher")
+            _dev = pm.Deterministic(
+                "dev", _sigma_dev * _offset, dims="pitcher"
+            )
+            _sigma_obs = pm.HalfNormal("sigma_obs", sigma=0.5)
+            pm.Normal(
+                "spin_obs",
+                mu=_f_pop + _dev[_pitcher_data],
+                sigma=_sigma_obs,
+                observed=_spin_data,
+                dims="obs",
+            )
+            if day_grid_z is not None:
+                _day_prediction = pm.Data(
+                    "day_prediction", day_grid_z, dims="prediction"
+                )
+                _gp_pop.conditional(
+                    "f_pop_grid",
+                    _day_prediction[:, None],
+                    dims="prediction",
+                )
+        return spin_model
 
-        sigma_dev = pm.HalfNormal("sigma_dev", sigma=0.5)  # small deviation amplitude
-        offset = pm.Normal("offset", 0, 1, dims="pitcher")  # non-centered
-        dev = pm.Deterministic("dev", sigma_dev * offset, dims="pitcher")
-
-        mu = f_pop + dev[pitcher_data]
-        sigma_obs = pm.HalfNormal("sigma_obs", sigma=0.5)
-        pm.Normal(
-            "spin_obs", mu=mu, sigma=sigma_obs, observed=spin_data, dims="obs"
-        )
-    return gp_pop, spin_model
+    spin_model = build_spin_model()
+    return build_spin_model, spin_model
 
 
 @app.cell(hide_code=True)
@@ -1442,27 +1504,22 @@ def _(
 
 
 @app.cell
-def _(az, spin_idata):
-    spin_n_div = spin_idata["sample_stats"]["diverging"].sum().item()
+def _(inference_health, spin_idata, spin_model):
+    spin_summary, spin_health_passed = inference_health(spin_idata, spin_model)
+    spin_n_div = spin_summary.attrs["divergences"]
     spin_n_draws_total = (
         spin_idata["posterior"].sizes["chain"] * spin_idata["posterior"].sizes["draw"]
     )
-    # Full-posterior summary — no var_names filter, so the whitened GP free RV
-    # (f_pop_rotated_) and the Deterministic f_pop are both covered, along
-    # with every hyperparameter and the per-pitcher deviations.
-    spin_full_summary = az.summary(spin_idata["posterior"])
-    spin_min_ess_bulk = float(spin_full_summary["ess_bulk"].min())
-    spin_min_ess_tail = float(spin_full_summary["ess_tail"].min())
-    spin_max_rhat = float(spin_full_summary["r_hat"].astype(float).max())
-    print(f"Divergences: {spin_n_div} / {spin_n_draws_total}")
-    # Compact table for readability; the numbers above still come from the
-    # full-posterior summary, not this filtered view.
-    spin_summary = az.summary(
-        spin_idata["posterior"],
-        var_names=["ell_pop", "eta_pop", "sigma_dev", "sigma_obs", "dev"],
+    spin_min_ess_bulk = float(spin_summary["ess_bulk"].min())
+    spin_min_ess_tail = float(spin_summary["ess_tail"].min())
+    spin_max_rhat = float(spin_summary["r_hat"].astype(float).max())
+    print(
+        f"Divergences: {spin_n_div} / {spin_n_draws_total}; "
+        f"health passed: {spin_health_passed}"
     )
     spin_summary
     return (
+        spin_health_passed,
         spin_max_rhat,
         spin_min_ess_bulk,
         spin_min_ess_tail,
@@ -1474,6 +1531,7 @@ def _(az, spin_idata):
 @app.cell(hide_code=True)
 def _(
     mo,
+    spin_health_passed,
     spin_max_rhat,
     spin_min_ess_bulk,
     spin_min_ess_tail,
@@ -1485,32 +1543,36 @@ def _(
         f"""
         **Diagnostics:** {spin_n_div} divergence(s) out of
         {spin_n_draws_total} draws in {spin_sample_seconds:.1f}s. Computed
-        over the **full posterior** — every hyperparameter, the per-pitcher
-        deviations, and the latent GP free RV `f_pop_rotated_` itself, not a
-        filtered subset — minimum `ess_bulk` is {spin_min_ess_bulk:.0f} and
-        minimum `ess_tail` is {spin_min_ess_tail:.0f} — both above the 400
-        threshold — and maximum `r_hat` is {spin_max_rhat:.3f}. Safe to
-        interpret.
+        over every free model variable. Minimum `ess_bulk` is
+        {spin_min_ess_bulk:.0f}, minimum `ess_tail` is
+        {spin_min_ess_tail:.0f}, and maximum `r_hat` is
+        {spin_max_rhat:.3f}. Health gate passed: **{spin_health_passed}**.
         """
     )
     return
 
 
 @app.cell
-def _(day_mean, day_of_season, day_std, gp_pop, np, spin_model):
+def _(day_mean, day_of_season, day_std, np):
     spin_day_grid = np.linspace(day_of_season.min(), day_of_season.max(), 50)
     spin_day_grid_z = ((spin_day_grid - day_mean) / day_std).reshape(-1, 1)
-    with spin_model:
-        f_pop_grid = gp_pop.conditional("f_pop_grid", spin_day_grid_z)
-    return (spin_day_grid,)
+    return spin_day_grid, spin_day_grid_z
 
 
 @app.cell
-def _(RANDOM_SEED, pm, spin_idata, spin_model):
-    with spin_model:
-        spin_grid_ppc = pm.sample_posterior_predictive(
-            spin_idata, var_names=["f_pop_grid"], random_seed=RANDOM_SEED
-        )
+def _(
+    RANDOM_SEED,
+    build_spin_model,
+    sample_fresh_model_predictions,
+    spin_day_grid_z,
+    spin_idata,
+):
+    spin_grid_ppc = sample_fresh_model_predictions(
+        spin_idata,
+        lambda: build_spin_model(spin_day_grid_z),
+        var_names=["f_pop_grid"],
+        random_seed=RANDOM_SEED,
+    )
     return (spin_grid_ppc,)
 
 
@@ -1530,7 +1592,7 @@ def _(
     spin_vals,
 ):
     _grid_n = len(spin_day_grid)
-    f_pop_grid_samples = spin_grid_ppc["posterior_predictive"]["f_pop_grid"]
+    f_pop_grid_samples = spin_grid_ppc["predictions"]["f_pop_grid"]
     f_pop_grid_samples = f_pop_grid_samples.rename(
         {f_pop_grid_samples.dims[-1]: "day"}
     ).assign_coords(day=spin_day_grid)

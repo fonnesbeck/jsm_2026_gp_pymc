@@ -536,7 +536,7 @@ def _(mo):
     ### Looking at the chains: trace and rank plots
 
     Summary numbers are necessary but not sufficient; it helps to *see*
-    the chains. Two standard views, both built here directly in plotly:
+    the chains. ArviZ provides two standard complementary views:
 
     - A **trace plot** shows each chain's draws against iteration. Healthy
       chains look like a "fuzzy caterpillar" — stationary, overlapping,
@@ -552,62 +552,14 @@ def _(mo):
 
 
 @app.cell
-def _(PYMC_BLUE, PYMC_GREEN, go, make_subplots, warmup_idata):
-    trace_fig = make_subplots(rows=1, cols=2, subplot_titles=("μ trace", "σ trace"))
-    _chain_colors = [PYMC_BLUE, PYMC_GREEN]
-    for _p, _col in (("mu", 1), ("sigma", 2)):
-        _da = warmup_idata["posterior"][_p]
-        for _ci in range(_da.sizes["chain"]):
-            trace_fig.add_trace(
-                go.Scatter(
-                    y=_da.isel(chain=_ci).values,
-                    mode="lines",
-                    line=dict(color=_chain_colors[_ci], width=1),
-                    opacity=0.7,
-                    name=f"chain {_ci}",
-                    showlegend=(_col == 1),
-                ),
-                row=1,
-                col=_col,
-            )
-    trace_fig.update_layout(
-        title="Trace plot — each chain's draws over iteration",
-        template="plotly_white",
-    )
-    trace_fig.update_xaxes(title_text="iteration")
-    trace_fig
+def _(az, warmup_idata):
+    az.plot_trace_dist(warmup_idata, var_names=["mu", "sigma"], compact=False)
     return
 
 
 @app.cell
-def _(PYMC_BLUE, PYMC_GREEN, go, np, warmup_idata):
-    # Rank plot for mu, built by hand: rank the pooled draws, then histogram
-    # each chain's ranks. Uniform-looking histograms indicate good mixing.
-    mu_draws = warmup_idata["posterior"]["mu"].values  # (chain, draw)
-    n_chain, n_draw = mu_draws.shape
-    flat_ranks = mu_draws.ravel().argsort().argsort().reshape(n_chain, n_draw)
-
-    rank_fig = go.Figure()
-    _chain_colors2 = [PYMC_BLUE, PYMC_GREEN]
-    _edges = np.linspace(0, n_chain * n_draw, 21)
-    for _ci in range(n_chain):
-        rank_fig.add_trace(
-            go.Histogram(
-                x=flat_ranks[_ci],
-                xbins=dict(start=_edges[0], end=_edges[-1], size=_edges[1] - _edges[0]),
-                marker=dict(color=_chain_colors2[_ci]),
-                opacity=0.6,
-                name=f"chain {_ci}",
-            )
-        )
-    rank_fig.update_layout(
-        barmode="overlay",
-        title="Rank plot for μ — roughly uniform per chain means good mixing",
-        xaxis_title="rank of pooled draw",
-        yaxis_title="count",
-        template="plotly_white",
-    )
-    rank_fig
+def _(az, warmup_idata):
+    az.plot_rank(warmup_idata, var_names=["mu", "sigma"])
     return
 
 

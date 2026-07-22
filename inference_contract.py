@@ -1,6 +1,23 @@
 """Shared Bayesian inference helpers for the workshop notebooks."""
 
 import arviz as az
+import pymc as pm
+
+
+def sample_fresh_model_predictions(
+    idata, build_prediction_model, *, var_names, random_seed
+):
+    """Draw named predictions from a model newly built for the prediction grid."""
+    prediction_model = build_prediction_model()
+    with prediction_model:
+        return pm.sample_posterior_predictive(
+            idata,
+            var_names=var_names,
+            random_seed=random_seed,
+            predictions=True,
+        )
+
+
 import numpy as np
 
 

@@ -38,7 +38,12 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     from pathlib import Path
-    from inference_contract import eti, inference_health, posterior_subset
+    from inference_contract import (
+        eti,
+        inference_health,
+        posterior_subset,
+        sample_fresh_model_predictions,
+    )
     from time import perf_counter
 
     import arviz as az
@@ -329,12 +334,10 @@ def _(X_log, np, pm, y):
         beta_mean = pm.Normal("beta_mean", mu=0, sigma=1)
         intercept_mean = pm.Normal("intercept_mean", mu=0, sigma=1)
         mean_func = pm.gp.mean.Linear(coeffs=beta_mean, intercept=intercept_mean)
-
         ell = pm.InverseGamma("ell", alpha=5, beta=5)
         eta = pm.HalfNormal("eta", sigma=2)
         sigma = pm.HalfNormal("sigma", sigma=1)
         cov_func = eta**2 * pm.gp.cov.Matern52(1, ls=ell)
-
         gp = pm.gp.Marginal(mean_func=mean_func, cov_func=cov_func)
         gp.marginal_likelihood(
             "y",
@@ -343,7 +346,55 @@ def _(X_log, np, pm, y):
             sigma=sigma,
             dims="observation",
         )
-    return gp, gp_model
+
+    def build_marginal_prediction_model(X_pred):
+        _prediction_coords = {
+            **_structured_coords,
+            "prediction": np.arange(len(X_pred)),
+        }
+        with pm.Model(coords=_prediction_coords) as prediction_model:
+            _prediction_X_data = pm.Data(
+                "X", X_log, dims=("observation", "feature")
+            )
+            _prediction_concentration_data = pm.Data(
+                "concentration", y, dims="observation"
+            )
+            _prediction_X_pred = pm.Data(
+                "X_pred", X_pred, dims=("prediction", "feature")
+            )
+            _prediction_beta_mean = pm.Normal("beta_mean", mu=0, sigma=1)
+            _prediction_intercept_mean = pm.Normal("intercept_mean", mu=0, sigma=1)
+            _prediction_mean = pm.gp.mean.Linear(
+                coeffs=_prediction_beta_mean, intercept=_prediction_intercept_mean
+            )
+            _prediction_ell = pm.InverseGamma("ell", alpha=5, beta=5)
+            _prediction_eta = pm.HalfNormal("eta", sigma=2)
+            _prediction_sigma = pm.HalfNormal("sigma", sigma=1)
+            _prediction_cov = _prediction_eta**2 * pm.gp.cov.Matern52(
+                1, ls=_prediction_ell
+            )
+            _prediction_gp = pm.gp.Marginal(
+                mean_func=_prediction_mean, cov_func=_prediction_cov
+            )
+            _prediction_gp.marginal_likelihood(
+                "y",
+                X=_prediction_X_data,
+                y=_prediction_concentration_data,
+                sigma=_prediction_sigma,
+                dims="observation",
+            )
+            _prediction_gp.conditional(
+                "f_pred", _prediction_X_pred, dims="prediction"
+            )
+            _prediction_gp.conditional(
+                "f_pred_noise",
+                _prediction_X_pred,
+                pred_noise=True,
+                dims="prediction",
+            )
+        return prediction_model
+
+    return build_marginal_prediction_model, gp, gp_model
 
 
 @app.cell(hide_code=True)
@@ -632,19 +683,19 @@ def _(log_time_mean, log_time_std, np, time_vals):
 
 
 @app.cell
-def _(Xnew, gp, gp_model):
-    with gp_model:
-        f_pred = gp.conditional("f_pred", Xnew)
-        f_pred_noise = gp.conditional("f_pred_noise", Xnew, pred_noise=True)
-    return
-
-
-@app.cell
-def _(RANDOM_SEED, gp_model, idata, pm):
-    with gp_model:
-        ppc = pm.sample_posterior_predictive(
-            idata, var_names=["f_pred", "f_pred_noise"], random_seed=RANDOM_SEED
-        )
+def _(
+    RANDOM_SEED,
+    Xnew,
+    build_marginal_prediction_model,
+    idata,
+    sample_fresh_model_predictions,
+):
+    ppc = sample_fresh_model_predictions(
+        idata,
+        lambda: build_marginal_prediction_model(Xnew),
+        var_names=["f_pred", "f_pred_noise"],
+        random_seed=RANDOM_SEED,
+    )
     return (ppc,)
 
 
@@ -661,11 +712,11 @@ def _(
     time_grid,
     time_vals,
 ):
-    _f_pred_draws = ppc["posterior_predictive"]["f_pred"]
+    _f_pred_draws = ppc["predictions"]["f_pred"]
     _f_pred_draws = _f_pred_draws.rename(
         {_f_pred_draws.dims[-1]: "time_grid"}
     ).assign_coords(time_grid=time_grid)
-    _f_pred_noise_draws = ppc["posterior_predictive"]["f_pred_noise"]
+    _f_pred_noise_draws = ppc["predictions"]["f_pred_noise"]
     _f_pred_noise_draws = _f_pred_noise_draws.rename(
         {_f_pred_noise_draws.dims[-1]: "time_grid"}
     ).assign_coords(time_grid=time_grid)
@@ -1501,18 +1552,23 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(PYMC_GREEN, RANDOM_SEED, disaster_counts, go, mo, np, pm, t, year_vals):
-    with pm.Model():
-        ell_alt = pm.InverseGamma("ell", alpha=2, beta=1)
-        eta_alt = pm.HalfNormal("eta", sigma=2)
-        cov_alt = eta_alt**2 * pm.gp.cov.Matern52(1, ls=ell_alt)
-
-        gp_alt = pm.gp.Latent(cov_func=cov_alt)
-        f_alt = gp_alt.prior("f", X=t)
-        rate_alt = pm.Deterministic("rate", pm.math.exp(f_alt))
-        pm.Poisson("y", mu=rate_alt, observed=disaster_counts)
-
-        alt_prior = pm.sample_prior_predictive(draws=500, random_seed=RANDOM_SEED)
-
+    _alt_coords = {"year": year_vals, "feature": ["standardized_year"]}
+    with pm.Model(coords=_alt_coords):
+        _alt_year_input = pm.Data(
+            "year_input", t, dims=("year", "feature")
+        )
+        _alt_disaster_count = pm.Data(
+            "disaster_count", disaster_counts, dims="year"
+        )
+        _ell_alt = pm.InverseGamma("ell", alpha=2, beta=1)
+        _eta_alt = pm.HalfNormal("eta", sigma=2)
+        _cov_alt = _eta_alt**2 * pm.gp.cov.Matern52(1, ls=_ell_alt)
+        _gp_alt = pm.gp.Latent(cov_func=_cov_alt)
+        _f_alt = _gp_alt.prior("f", X=_alt_year_input, dims="year")
+        _rate_alt = pm.Deterministic("rate", pm.math.exp(_f_alt), dims="year")
+        pm.Poisson(
+            "y", mu=_rate_alt, observed=_alt_disaster_count, dims="year"
+        )
     alt_rate_draws = alt_prior["prior"]["rate"].values.reshape(-1, len(year_vals))
 
     alt_fig = go.Figure()
