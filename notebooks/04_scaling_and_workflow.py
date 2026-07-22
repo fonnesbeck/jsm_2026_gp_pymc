@@ -13,41 +13,40 @@ def _():
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        # Scaling, Approximate GPs, and the Model Workflow
+    mo.md(r"""
+    # Scaling, Approximate GPs, and the Model Workflow
 
-        Notebooks 1–3 fit exact GPs — `pm.gp.Marginal` and `pm.gp.Latent` —
-        on datasets from a handful of points up to a few hundred. This
-        notebook confronts what happens as data grows into the thousands,
-        and what to do about it.
+    Notebooks 1–3 fit exact GPs — `pm.gp.Marginal` and `pm.gp.Latent` —
+    on datasets from a handful of points up to a few hundred. This
+    notebook confronts what happens as data grows into the thousands,
+    and what to do about it.
 
-        **Part A — why exact GPs don't scale.** A concrete timing
-        demonstration of the $O(n^3)$ Cholesky-factorization cost that
-        exact GP inference pays at every gradient evaluation.
+    **Part A — why exact GPs don't scale.** A concrete timing
+    demonstration of the $O(n^3)$ Cholesky-factorization cost that
+    exact GP inference pays at every gradient evaluation.
 
-        **Part B — sparse approximation.** `pm.gp.MarginalApprox` replaces
-        the exact $n \times n$ covariance with a rank-reduced approximation
-        built from a small set of *inducing points*, fit here to a few
-        hundred NOAA tide-gauge readings.
+    **Part B — sparse approximation.** `pm.gp.MarginalApprox` replaces
+    the exact $n \times n$ covariance with a rank-reduced approximation
+    built from a small set of *inducing points*, fit here to a few
+    hundred NOAA tide-gauge readings.
 
-        **Part C — Hilbert-space GP (HSGP) approximation.** A different,
-        basis-function approximation that scales *linearly* in $n$, fit
-        here to the **full** ~8,760-hour NOAA tide series — a size that
-        would be impractical for exact inference.
+    **Part C — Hilbert-space GP (HSGP) approximation.** A different,
+    basis-function approximation that scales *linearly* in $n$, fit
+    here to the **full** ~8,760-hour NOAA tide series — a size that
+    would be impractical for exact inference.
 
-        **Part D — the model-development workflow.** Putting the pieces
-        together: prior predictive checks, saving results early, MCMC
-        diagnostics, posterior predictive checks, and a decision guide for
-        choosing among exact, sparse, and HSGP GPs.
-        """
-    )
+    **Part D — the model-development workflow.** Putting the pieces
+    together: prior predictive checks, saving results early, MCMC
+    diagnostics, posterior predictive checks, and a decision guide for
+    choosing among exact, sparse, and HSGP GPs.
+    """)
     return
 
 
 @app.cell(hide_code=True)
-def _():
+def _(mo):
     from pathlib import Path
+    from inference_contract import eti, inference_health, posterior_subset
     from time import perf_counter
 
     import arviz as az
@@ -63,7 +62,12 @@ def _():
     PYMC_DARK_GREEN = "#40611F"
 
     RANDOM_SEED = 42
-    rng = np.random.default_rng(RANDOM_SEED)
+    is_script_mode = mo.app_meta().mode == "script"
+    execute_models = is_script_mode or bool(
+        mo.cli_args().get("execute-models", False)
+    )
+    results_dir = Path(__file__).parent.parent / "results"
+    results_dir.mkdir(exist_ok=True)
 
     data_dir = Path(__file__).parent.parent / "data"
 
@@ -76,38 +80,36 @@ def _():
         PYMC_DARK_GREEN,
         PYMC_GREEN,
         PYMC_LIGHT_BLUE,
-        Path,
         RANDOM_SEED,
         az,
         data_dir,
+        execute_models,
         go,
         np,
         perf_counter,
         pl,
         pm,
-        rng,
+        results_dir,
         z,
     )
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## Part A: Why exact GPs don't scale
+    mo.md(r"""
+    ## Part A: Why exact GPs don't scale
 
-        Fitting `pm.gp.Marginal` (or `pm.gp.Latent`) exactly requires
-        factorizing the $n \times n$ training covariance matrix $K$ — a
-        Cholesky decomposition — at **every** gradient evaluation NUTS
-        makes during sampling, since $\ell$, $\eta$, and $\sigma$ change
-        $K$ at every step. Cholesky factorization costs $O(n^3)$
-        floating-point operations, and NUTS typically needs thousands of
-        gradient evaluations over a full sampling run. Below we measure
-        just the factorization step — building $K$ and calling
-        `np.linalg.cholesky` — with **no sampling at all**, as $n$ grows,
-        to make the scaling visible directly.
-        """
-    )
+    Fitting `pm.gp.Marginal` (or `pm.gp.Latent`) exactly requires
+    factorizing the $n \times n$ training covariance matrix $K$ — a
+    Cholesky decomposition — at **every** gradient evaluation NUTS
+    makes during sampling, since $\ell$, $\eta$, and $\sigma$ change
+    $K$ at every step. Cholesky factorization costs $O(n^3)$
+    floating-point operations, and NUTS typically needs thousands of
+    gradient evaluations over a full sampling run. Below we measure
+    just the factorization step — building $K$ and calling
+    `np.linalg.cholesky` — with **no sampling at all**, as $n$ grows,
+    to make the scaling visible directly.
+    """)
     return
 
 
@@ -180,28 +182,26 @@ def _(mo, scale_ns, scale_times):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## Part B: Sparse approximation — inducing points
+    mo.md(r"""
+    ## Part B: Sparse approximation — inducing points
 
-        Instead of the full $n \times n$ covariance, a **sparse** GP
-        approximation summarizes the training data with a small set of
-        $m \ll n$ **inducing points** (also called pseudo-inputs), located
-        somewhere in the input space (not necessarily at observed $x$
-        values). All of the expensive linear algebra is then done on
-        $m \times m$ and $n \times m$ matrices instead of $n \times n$ —
-        $O(nm^2)$ instead of $O(n^3)$ — a large saving whenever $m \ll n$.
-        `pm.gp.MarginalApprox` implements this for the conjugate
-        (Gaussian-likelihood) case, with several approximation variants;
-        below we use **FITC** (Fully Independent Training Conditional),
-        which additionally corrects the noise/uncertainty at each training
-        point for the information lost by not conditioning on the full
-        exact covariance. The inducing point *locations* can be fixed,
-        chosen by a simple heuristic (e.g. k-means cluster centers over the
-        training inputs, used below), or even learned as extra parameters —
-        we treat them as fixed here.
-        """
-    )
+    Instead of the full $n \times n$ covariance, a **sparse** GP
+    approximation summarizes the training data with a small set of
+    $m \ll n$ **inducing points** (also called pseudo-inputs), located
+    somewhere in the input space (not necessarily at observed $x$
+    values). All of the expensive linear algebra is then done on
+    $m \times m$ and $n \times m$ matrices instead of $n \times n$ —
+    $O(nm^2)$ instead of $O(n^3)$ — a large saving whenever $m \ll n$.
+    `pm.gp.MarginalApprox` implements this for the conjugate
+    (Gaussian-likelihood) case, with several approximation variants;
+    below we use **FITC** (Fully Independent Training Conditional),
+    which additionally corrects the noise/uncertainty at each training
+    point for the information lost by not conditioning on the full
+    exact covariance. The inducing point *locations* can be fixed,
+    chosen by a simple heuristic (e.g. k-means cluster centers over the
+    training inputs, used below), or even learned as extra parameters —
+    we treat them as fixed here.
+    """)
     return
 
 
@@ -214,7 +214,7 @@ def _(data_dir, pl):
     )
     sparse_slice = sparse_tides.slice(3000, N_SPARSE)
     sparse_slice.head()
-    return N_SPARSE, sparse_slice
+    return (sparse_slice,)
 
 
 @app.cell
@@ -264,17 +264,15 @@ def _(PYMC_BLUE, go, sparse_hours, sparse_level):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        We reuse the same additive trend + semidiurnal + diurnal kernel
-        structure from Notebook 3 (Part B), with the tidal periods and
-        within-cycle shapes again fixed at their physically-motivated
-        constants for the same reason as before — only now on more than
-        twice as many points, and fit with a **small** set of 25 inducing
-        points (about 5% of $n$) chosen by k-means over the standardized
-        time axis, rather than the exact $450 \times 450$ covariance.
-        """
-    )
+    mo.md(r"""
+    We reuse the same additive trend + semidiurnal + diurnal kernel
+    structure from Notebook 3 (Part B), with the tidal periods and
+    within-cycle shapes again fixed at their physically-motivated
+    constants for the same reason as before — only now on more than
+    twice as many points, and fit with a **small** set of 25 inducing
+    points (about 5% of $n$) chosen by k-means over the standardized
+    time axis, rather than the exact $450 \times 450$ covariance.
+    """)
     return
 
 
@@ -309,12 +307,10 @@ def _(X_sparse, pm, sparse_hours_std):
 
         Xu = pm.Data("Xu", Xu_init)
         gp_sparse = pm.gp.MarginalApprox(cov_func=cov_sparse, approx="FITC")
-
     return (
         N_INDUCING,
         SPARSE_PERIODIC_LS_STD,
         Xu,
-        cov_sparse,
         gp_sparse,
         sigma_sparse,
         sparse_diurnal_period_std,
@@ -334,24 +330,22 @@ def _(X_sparse, Xu, gp_sparse, sigma_sparse, sparse_model, y_sparse):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Prior predictive check
+    mo.md(r"""
+    ### Prior predictive check
 
-        `MarginalApprox.marginal_likelihood` registers its FITC likelihood
-        as a `pm.Potential` (a log-density contribution), not as an
-        observed random variable — so there is no generative "y" node to
-        draw prior-predictive samples from directly on `sparse_model`
-        itself. Since the FITC approximation only changes how the
-        **posterior** is computed, not the **prior** over the kernel
-        hyperparameters, we build a second, throwaway model below with the
-        identical priors and kernel but an *exact* `pm.gp.Marginal`
-        likelihood (which does register an observed RV) purely to draw
-        prior-predictive `y` samples for this plausibility check. It is
-        never sampled from with `pm.sample` — only `sparse_model` above is
-        used for actual inference.
-        """
-    )
+    `MarginalApprox.marginal_likelihood` registers its FITC likelihood
+    as a `pm.Potential` (a log-density contribution), not as an
+    observed random variable — so there is no generative "y" node to
+    draw prior-predictive samples from directly on `sparse_model`
+    itself. Since the FITC approximation only changes how the
+    **posterior** is computed, not the **prior** over the kernel
+    hyperparameters, we build a second, throwaway model below with the
+    identical priors and kernel but an *exact* `pm.gp.Marginal`
+    likelihood (which does register an observed RV) purely to draw
+    prior-predictive `y` samples for this plausibility check. It is
+    never sampled from with `pm.sample` — only `sparse_model` above is
+    used for actual inference.
+    """)
     return
 
 
@@ -458,11 +452,29 @@ def _(N_INDUCING, mo):
 
 
 @app.cell
-def _(RANDOM_SEED, perf_counter, pm, sparse_model):
+def _(mo):
+    sparse_fit_button = mo.ui.run_button(label="Fit sparse FITC GP")
+    sparse_fit_button
+    return (sparse_fit_button,)
+
+
+@app.cell
+def _(
+    RANDOM_SEED,
+    execute_models,
+    mo,
+    perf_counter,
+    pm,
+    results_dir,
+    sparse_fit_button,
+    sparse_model,
+):
+    mo.stop(not (sparse_fit_button.value or execute_models))
     with sparse_model:
         sparse_start = perf_counter()
-        sparse_idata = pm.sample(random_seed=RANDOM_SEED)
+        sparse_idata = pm.sample(chains=4, random_seed=RANDOM_SEED)
         sparse_sample_seconds = perf_counter() - sparse_start
+    sparse_idata.to_netcdf(results_dir / "04_sparse_fitc_gp.nc")
     print(f"Sparse FITC-GP sampling wall-time: {sparse_sample_seconds:.1f}s")
     return sparse_idata, sparse_sample_seconds
 
@@ -516,11 +528,11 @@ def _(
 def _(X_sparse, gp_sparse, sparse_model):
     with sparse_model:
         f_sparse_pred = gp_sparse.conditional("f_sparse_pred", X_sparse)
-    return (f_sparse_pred,)
+    return
 
 
 @app.cell
-def _(RANDOM_SEED, f_sparse_pred, pm, sparse_idata, sparse_model):
+def _(RANDOM_SEED, pm, sparse_idata, sparse_model):
     with sparse_model:
         sparse_ppc = pm.sample_posterior_predictive(
             sparse_idata, var_names=["f_sparse_pred"], random_seed=RANDOM_SEED
@@ -607,51 +619,47 @@ def _(
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        The FITC fit recovers essentially the same tidal shape as the
-        exact fit in Notebook 3, using a covariance approximation that
-        never touches more than a $450 \times 25$ matrix. The 25 inducing
-        points (orange triangles, plotted along the bottom for reference)
-        are enough to summarize the whole 450-point training set for this
-        smoothly-varying signal. That is the point of sparse approximation:
-        trade a small, usually invisible amount of accuracy for a large
-        reduction in cost. It still will not reach the full year, though —
-        even $O(nm^2)$ becomes expensive as $n$ grows into the thousands
-        with a fixed-size $m$ that must grow to track increasingly complex
-        structure. Part C introduces an approximation whose cost is
-        *linear* in $n$, letting us fit the entire 8,760-point series next.
-        """
-    )
+    mo.md(r"""
+    The FITC fit recovers essentially the same tidal shape as the
+    exact fit in Notebook 3, using a covariance approximation that
+    never touches more than a $450 \times 25$ matrix. The 25 inducing
+    points (orange triangles, plotted along the bottom for reference)
+    are enough to summarize the whole 450-point training set for this
+    smoothly-varying signal. That is the point of sparse approximation:
+    trade a small, usually invisible amount of accuracy for a large
+    reduction in cost. It still will not reach the full year, though —
+    even $O(nm^2)$ becomes expensive as $n$ grows into the thousands
+    with a fixed-size $m$ that must grow to track increasingly complex
+    structure. Part C introduces an approximation whose cost is
+    *linear* in $n$, letting us fit the entire 8,760-point series next.
+    """)
     return
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## Part C: Hilbert-space GP (HSGP) approximation
+    mo.md(r"""
+    ## Part C: Hilbert-space GP (HSGP) approximation
 
-        The **Hilbert-space GP** approximation takes a completely different
-        approach from sparse/inducing-point methods. Instead of
-        approximating the *covariance matrix*, it approximates the
-        covariance **function** itself by its spectral (Fourier-like)
-        decomposition on a bounded domain: a GP with a stationary kernel is
-        rewritten as a weighted sum of a fixed set of basis functions
-        (Laplace eigenfunctions of the domain, independent of any kernel
-        hyperparameter) with random Gaussian weights, whose variances are
-        set by the kernel's power spectral density (which *does* depend on
-        the hyperparameters). Because the basis functions don't change
-        during sampling, the model is essentially a **linear-in-parameters**
-        regression on those weights — cost grows **linearly** in $n$, not
-        cubically, since evaluating the fixed basis at $n$ points is just a
-        $O(nm)$ matrix multiply. The tradeoff: the number of basis
-        functions $m$ (and the domain boundary) must be chosen so the
-        approximation is accurate over the lengthscales the kernel actually
-        needs to represent — get $m$ or the boundary wrong and the
-        approximation degrades, as the exercise below will show directly.
-        """
-    )
+    The **Hilbert-space GP** approximation takes a completely different
+    approach from sparse/inducing-point methods. Instead of
+    approximating the *covariance matrix*, it approximates the
+    covariance **function** itself by its spectral (Fourier-like)
+    decomposition on a bounded domain: a GP with a stationary kernel is
+    rewritten as a weighted sum of a fixed set of basis functions
+    (Laplace eigenfunctions of the domain, independent of any kernel
+    hyperparameter) with random Gaussian weights, whose variances are
+    set by the kernel's power spectral density (which *does* depend on
+    the hyperparameters). Because the basis functions don't change
+    during sampling, the model is essentially a **linear-in-parameters**
+    regression on those weights — cost grows **linearly** in $n$, not
+    cubically, since evaluating the fixed basis at $n$ points is just a
+    $O(nm)$ matrix multiply. The tradeoff: the number of basis
+    functions $m$ (and the domain boundary) must be chosen so the
+    approximation is accurate over the lengthscales the kernel actually
+    needs to represent — get $m$ or the boundary wrong and the
+    approximation degrades, as the exercise below will show directly.
+    """)
     return
 
 
@@ -740,29 +748,27 @@ def _(c_slider, m_slider, mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Constraints of the HSGP approximation
+    mo.md(r"""
+    ### Constraints of the HSGP approximation
 
-        - Only works for **stationary** covariance functions with a known
-          power spectral density (`Matern52`, `ExpQuad`, `Matern32`, ... —
-          not `Linear`, which is not stationary).
-        - Officially supported for input dimension **up to 3** — the
-          number of basis functions needed to cover a fixed-density grid
-          grows exponentially with dimension, so HSGP stops being
-          efficient well before that in practice for high-dimensional
-          inputs.
-        - The **`Periodic`** kernel is *not* directly supported by
-          `pm.gp.HSGP` (it has no ordinary power-spectral-density
-          expansion) — PyMC provides a separate `pm.gp.HSGPPeriodic` class
-          using a different low-rank basis (used below) for periodic
-          structure.
-        - Accuracy depends on `m` and the boundary factor `c` (or an
-          explicit boundary `L`) both being large enough for the
-          lengthscales actually present in the data, as explored above and
-          in the exercise below.
-        """
-    )
+    - Only works for **stationary** covariance functions with a known
+      power spectral density (`Matern52`, `ExpQuad`, `Matern32`, ... —
+      not `Linear`, which is not stationary).
+    - Officially supported for input dimension **up to 3** — the
+      number of basis functions needed to cover a fixed-density grid
+      grows exponentially with dimension, so HSGP stops being
+      efficient well before that in practice for high-dimensional
+      inputs.
+    - The **`Periodic`** kernel is *not* directly supported by
+      `pm.gp.HSGP` (it has no ordinary power-spectral-density
+      expansion) — PyMC provides a separate `pm.gp.HSGPPeriodic` class
+      using a different low-rank basis (used below) for periodic
+      structure.
+    - Accuracy depends on `m` and the boundary factor `c` (or an
+      explicit boundary `L`) both being large enough for the
+      lengthscales actually present in the data, as explored above and
+      in the exercise below.
+    """)
     return
 
 
@@ -821,29 +827,27 @@ def _(PYMC_BLUE, go, hsgp_hours, hsgp_level):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Model: trend + semidiurnal tide
+    mo.md(r"""
+    ### Model: trend + semidiurnal tide
 
-        As discussed in Notebook 3, the semidiurnal (~12.42h) and diurnal
-        (~23.93h) tidal periods are close to commensurate (23.93 ≈
-        2 × 12.42), which makes a posterior that frees both components'
-        amplitudes simultaneously hard to sample — the two periodic
-        components can trade off against each other. Over a full year of
-        hourly data that difficulty is worse, not better: 8,760 points give
-        the near-commensurate frequencies far more opportunity to alias
-        against one another. To keep the full-series fit well-behaved for
-        this introductory workshop, we model only the **dominant**
-        semidiurnal component (`pm.gp.HSGPPeriodic`, period fixed at the
-        physical constant) plus a smooth trend (`pm.gp.HSGP` with a
-        `Matern52` kernel, using the $m$/$c$ slider values above) — leaving
-        out the smaller diurnal correction. This is a real modeling
-        simplification, not a limitation of HSGP itself; a production tide
-        model would resolve it (e.g. by fitting on a coarser dataset with
-        each period's amplitude given more informative, mutually
-        constraining priors).
-        """
-    )
+    As discussed in Notebook 3, the semidiurnal (~12.42h) and diurnal
+    (~23.93h) tidal periods are close to commensurate (23.93 ≈
+    2 × 12.42), which makes a posterior that frees both components'
+    amplitudes simultaneously hard to sample — the two periodic
+    components can trade off against each other. Over a full year of
+    hourly data that difficulty is worse, not better: 8,760 points give
+    the near-commensurate frequencies far more opportunity to alias
+    against one another. To keep the full-series fit well-behaved for
+    this introductory workshop, we model only the **dominant**
+    semidiurnal component (`pm.gp.HSGPPeriodic`, period fixed at the
+    physical constant) plus a smooth trend (`pm.gp.HSGP` with a
+    `Matern52` kernel, using the $m$/$c$ slider values above) — leaving
+    out the smaller diurnal correction. This is a real modeling
+    simplification, not a limitation of HSGP itself; a production tide
+    model would resolve it (e.g. by fitting on a coarser dataset with
+    each period's amplitude given more informative, mutually
+    constraining priors).
+    """)
     return
 
 
@@ -870,7 +874,13 @@ def _():
 
 @app.cell
 def _(
-    HSGP_C, HSGP_M_TREND, HSGP_PERIODIC_LS_STD, X_hsgp, hsgp_semi_period_std, pm, y_hsgp
+    HSGP_C,
+    HSGP_M_TREND,
+    HSGP_PERIODIC_LS_STD,
+    X_hsgp,
+    hsgp_semi_period_std,
+    pm,
+    y_hsgp,
 ):
     with pm.Model() as hsgp_model:
         ell_trend = pm.InverseGamma("ell_trend", alpha=5, beta=5)
@@ -888,13 +898,14 @@ def _(
 
         sigma_hsgp = pm.HalfNormal("sigma_hsgp", sigma=0.5)
         pm.Normal("y", mu=f_trend + f_semi, sigma=sigma_hsgp, observed=y_hsgp)
-
-    return f_semi, f_trend, hsgp_model
+    return (hsgp_model,)
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(r"""### Prior predictive check""")
+    mo.md(r"""
+    ### Prior predictive check
+    """)
     return
 
 
@@ -959,77 +970,89 @@ def _(hsgp_prior_draws, mo, y_hsgp):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Sampling
+    mo.md(r"""
+    ### Sampling
 
-        8,760 observations, but only the `HSGP_M_TREND` trend basis
-        coefficients + 15 periodic basis coefficients + 4 hyperparameters
-        are actually sampled (HSGP's fixed-basis, linear-in-$n$ structure
-        again) — so despite the data size, this is a small sampling
-        problem. We raise `target_accept` above the 0.8 default and use
-        more draws than the `1000` default, both because the near-periodic
-        structure still leaves a mildly delicate posterior geometry even
-        with only one periodic component.
-        """
-    )
+    8,760 observations, but only the `HSGP_M_TREND` trend basis
+    coefficients + 15 periodic basis coefficients + 4 hyperparameters
+    are actually sampled (HSGP's fixed-basis, linear-in-$n$ structure
+    again) — so despite the data size, this is a small sampling
+    problem. We raise `target_accept` above the 0.8 default and use
+    more draws than the `1000` default, both because the near-periodic
+    structure still leaves a mildly delicate posterior geometry even
+    with only one periodic component.
+    """)
     return
 
 
 @app.cell
-def _(RANDOM_SEED, hsgp_model, perf_counter, pm):
+def _(mo):
+    hsgp_fit_button = mo.ui.run_button(label="Fit full-year HSGP")
+    hsgp_fit_button
+    return (hsgp_fit_button,)
+
+
+@app.cell
+def _(
+    RANDOM_SEED,
+    execute_models,
+    hsgp_fit_button,
+    hsgp_model,
+    mo,
+    perf_counter,
+    pm,
+    results_dir,
+):
+    mo.stop(not (hsgp_fit_button.value or execute_models))
     with hsgp_model:
         hsgp_start = perf_counter()
         hsgp_idata = pm.sample(
             random_seed=RANDOM_SEED,
-            target_accept=0.97,
             draws=1500,
             tune=1500,
+            chains=4,
         )
         hsgp_sample_seconds = perf_counter() - hsgp_start
+    hsgp_idata.to_netcdf(results_dir / "04_hsgp_full_year.nc")
     print(f"HSGP full-year sampling wall-time: {hsgp_sample_seconds:.1f}s")
     return hsgp_idata, hsgp_sample_seconds
 
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ### Save early
+    mo.md(r"""
+    ### Save early
 
-        Before computing a single diagnostic, save the freshly sampled
-        `idata` to disk. Posterior sampling is the most expensive step in
-        this whole workflow — if a later cell crashes, the kernel
-        restarts, or a diagnostic call has a bug, an unsaved `idata` means
-        resampling everything from scratch. Saving immediately, *before*
-        any inspection, is cheap in **time** — but not necessarily in
-        **space**: `f_trend`/`f_semi` are two 8,760-length Deterministics
-        (one full projection per posterior draw), so the *naive* save here
-        would be several hundred megabytes. Since both are an exact linear
-        projection of the much smaller `f_trend_hsgp_coeffs` /
-        `f_semi_hsgp_coeffs_` basis coefficients (which we do keep), we drop
-        them before writing and can recompute them from the coefficients
-        whenever needed. We revisit this file (and the rest of the
-        diagnostic loop) formally in Part D below.
-        """
-    )
+    Before computing a single diagnostic, save the freshly sampled
+    `idata` to disk. Posterior sampling is the most expensive step in
+    this whole workflow — if a later cell crashes, the kernel
+    restarts, or a diagnostic call has a bug, an unsaved `idata` means
+    resampling everything from scratch. Saving immediately, *before*
+    any inspection, is cheap in **time** — but not necessarily in
+    **space**: `f_trend`/`f_semi` are two 8,760-length Deterministics
+    (one full projection per posterior draw), so the *naive* save here
+    would be several hundred megabytes. Since both are an exact linear
+    projection of the much smaller `f_trend_hsgp_coeffs` /
+    `f_semi_hsgp_coeffs_` basis coefficients (which we do keep), we drop
+    them before writing and can recompute them from the coefficients
+    whenever needed. We revisit this file (and the rest of the
+    diagnostic loop) formally in Part D below.
+    """)
     return
 
 
 @app.cell
-def _(Path, hsgp_idata):
-    results_dir = Path(__file__).parent.parent / "results"
-    results_dir.mkdir(exist_ok=True)
+def _(hsgp_idata, results_dir):
     # Drop the large per-timepoint Deterministics before saving — they are an
     # exact linear projection of the much smaller HSGP basis coefficients
     # (also in `idata`), so they can always be recomputed and needn't bloat
     # the file on disk.
     hsgp_idata_to_save = hsgp_idata.copy()
-    hsgp_idata_to_save["posterior"] = hsgp_idata_to_save.posterior.ds.drop_vars(
+    hsgp_idata_to_save["posterior"] = hsgp_idata_to_save["posterior"].drop_vars(
         ["f_trend", "f_semi"]
     )
     hsgp_idata_to_save.to_netcdf(str(results_dir / "hsgp.nc"))
-    return (results_dir,)
+    return
 
 
 @app.cell
@@ -1192,40 +1215,38 @@ def _(PYMC_BLUE, go, hsgp_fit_vals, hsgp_hours, hsgp_level):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        Zoomed out to the full year, the HSGP posterior mean tracks the
-        slow seasonal drift in mean water level; zoomed in to two weeks at
-        full hourly resolution, the semidiurnal tidal cycle is still
-        resolved cleanly — the basis-function approximation has not
-        blurred out the fast-varying structure it was given enough basis
-        functions to represent. (The diurnal inequality — alternating
-        higher/lower high tides each day, visible in the exact fits in
-        Notebook 3 — is smoothed over here, since we deliberately omitted
-        that second periodic component above.)
+    mo.md(r"""
+    Zoomed out to the full year, the HSGP posterior mean tracks the
+    slow seasonal drift in mean water level; zoomed in to two weeks at
+    full hourly resolution, the semidiurnal tidal cycle is still
+    resolved cleanly — the basis-function approximation has not
+    blurred out the fast-varying structure it was given enough basis
+    functions to represent. (The diurnal inequality — alternating
+    higher/lower high tides each day, visible in the exact fits in
+    Notebook 3 — is smoothed over here, since we deliberately omitted
+    that second periodic component above.)
 
-        ### Exercise: change `m` and `c` and judge the tradeoff
+    ### Exercise: change `m` and `c` and judge the tradeoff
 
-        The `m` / `c` sliders above Part C only drive the cheap basis-function
-        demo — the full-year fit uses the fixed `HSGP_M_TREND` / `HSGP_C`
-        constants defined just above the model cell instead, so that
-        exploring the fit is a deliberate choice rather than something an
-        accidental slider drag retriggers (each fit takes ~1 minute and
-        writes a large `idata`). To try the tradeoff yourself, edit those two
-        constants directly in the code and re-run the model, sampling, and
-        diagnostics cells, one change at a time:
+    The `m` / `c` sliders above Part C only drive the cheap basis-function
+    demo — the full-year fit uses the fixed `HSGP_M_TREND` / `HSGP_C`
+    constants defined just above the model cell instead, so that
+    exploring the fit is a deliberate choice rather than something an
+    accidental slider drag retriggers (each fit takes ~1 minute and
+    writes a large `idata`). To try the tradeoff yourself, edit those two
+    constants directly in the code and re-run the model, sampling, and
+    diagnostics cells, one change at a time:
 
-        1. **Drop `HSGP_M_TREND` to something small**, e.g. 8. Does the
-           full-year fit above still track the slow seasonal trend, or does
-           it visibly under-fit (too smooth, missing real drift)?
-        2. **Push `HSGP_C` up to 3.0 while leaving `HSGP_M_TREND` at its
-           default (20).** Does the fit change much? What happens to the
-           diagnostics (divergences, `ess_bulk`, `r_hat`) as you push $c$ up
-           without also raising $m$?
+    1. **Drop `HSGP_M_TREND` to something small**, e.g. 8. Does the
+       full-year fit above still track the slow seasonal trend, or does
+       it visibly under-fit (too smooth, missing real drift)?
+    2. **Push `HSGP_C` up to 3.0 while leaving `HSGP_M_TREND` at its
+       default (20).** Does the fit change much? What happens to the
+       diagnostics (divergences, `ess_bulk`, `r_hat`) as you push $c$ up
+       without also raising $m$?
 
-        Expand below for a discussion once you've tried at least one.
-        """
-    )
+    Expand below for a discussion once you've tried at least one.
+    """)
     return
 
 
@@ -1270,20 +1291,18 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        ## Part D: The model-development workflow
+    mo.md(r"""
+    ## Part D: The model-development workflow
 
-        We've already done the first two steps of the standard workflow on
-        the HSGP fit above — a **prior predictive check** before ever
-        calling `pm.sample`, and **saving `idata` to disk immediately**
-        after sampling finished, before looking at a single diagnostic.
-        This section completes the loop on that same `hsgp_idata`: two
-        more diagnostics beyond divergences and `r_hat`/`ess`, then a
-        decision guide for choosing among the three GP flavors covered in
-        this notebook.
-        """
-    )
+    We've already done the first two steps of the standard workflow on
+    the HSGP fit above — a **prior predictive check** before ever
+    calling `pm.sample`, and **saving `idata` to disk immediately**
+    after sampling finished, before looking at a single diagnostic.
+    This section completes the loop on that same `hsgp_idata`: two
+    more diagnostics beyond divergences and `r_hat`/`ess`, then a
+    decision guide for choosing among the three GP flavors covered in
+    this notebook.
+    """)
     return
 
 
@@ -1298,27 +1317,25 @@ def _(az, hsgp_idata):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        **Reading the energy plot:** it overlays the marginal energy
-        distribution with the energy-transition distribution. When the two
-        histograms overlap closely (as above), HMC/NUTS is exploring the
-        posterior's energy levels efficiently; a transition distribution
-        that is visibly narrower than the marginal one signals poor
-        exploration (the sampler struggles to move between energy levels) —
-        a geometry problem that `r_hat` and `ess` alone can miss, since
-        those are computed per-parameter while the energy diagnostic
-        reflects the sampler's global behavior across the whole joint
-        posterior.
+    mo.md(r"""
+    **Reading the energy plot:** it overlays the marginal energy
+    distribution with the energy-transition distribution. When the two
+    histograms overlap closely (as above), HMC/NUTS is exploring the
+    posterior's energy levels efficiently; a transition distribution
+    that is visibly narrower than the marginal one signals poor
+    exploration (the sampler struggles to move between energy levels) —
+    a geometry problem that `r_hat` and `ess` alone can miss, since
+    those are computed per-parameter while the energy diagnostic
+    reflects the sampler's global behavior across the whole joint
+    posterior.
 
-        ### Posterior predictive check
+    ### Posterior predictive check
 
-        Finally, simulate new data from the fitted model and compare its
-        distribution to the observed data — a check that the *whole*
-        model (not just individual hyperparameters) can plausibly have
-        generated what we saw.
-        """
-    )
+    Finally, simulate new data from the fitted model and compare its
+    distribution to the observed data — a check that the *whole*
+    model (not just individual hyperparameters) can plausibly have
+    generated what we saw.
+    """)
     return
 
 
@@ -1376,41 +1393,39 @@ def _(PYMC_BLUE, PYMC_GREEN, go, np, wf_ppc, y_hsgp):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        The observed ECDF (blue) sits comfortably inside the band of 30
-        posterior-predictive ECDFs (green) at every quantile — the fitted
-        model's implied data distribution matches the real one well, with
-        no systematic gap indicating a mis-specified likelihood or missing
-        structure.
+    mo.md(r"""
+    The observed ECDF (blue) sits comfortably inside the band of 30
+    posterior-predictive ECDFs (green) at every quantile — the fitted
+    model's implied data distribution matches the real one well, with
+    no systematic gap indicating a mis-specified likelihood or missing
+    structure.
 
-        **Out of scope for this course:** comparing models by predictive
-        accuracy via `az.compute_log_likelihood` + `az.loo`/`az.compare`
-        (LOO-CV, ELPD) is a natural next step once you have more than one
-        candidate model, but is beyond what we can cover in an
-        introductory workshop — see the ArviZ documentation and the
-        `model-evaluation` material for that workflow.
+    **Out of scope for this course:** comparing models by predictive
+    accuracy via `az.compute_log_likelihood` + `az.loo`/`az.compare`
+    (LOO-CV, ELPD) is a natural next step once you have more than one
+    candidate model, but is beyond what we can cover in an
+    introductory workshop — see the ArviZ documentation and the
+    `model-evaluation` material for that workflow.
 
-        ### Decision guide: exact vs. sparse vs. HSGP
+    ### Decision guide: exact vs. sparse vs. HSGP
 
-        | | **Exact** (`pm.gp.Marginal` / `pm.gp.Latent`) | **Sparse** (`pm.gp.MarginalApprox`) | **HSGP** (`pm.gp.HSGP` / `HSGPPeriodic`) |
-        |---|---|---|---|
-        | **Cost** | $O(n^3)$ per gradient eval | $O(nm^2)$, $m$ = # inducing points | $O(nm)$, $m$ = # basis functions (linear in $n$) |
-        | **When to use** | Small/moderate $n$ (up to a few hundred–low thousands); need exact inference | Moderate–large $n$; conjugate (Gaussian-noise) likelihoods; comfortable choosing inducing points | Large $n$ (thousands+); need speed and are willing to restrict to stationary kernels |
-        | **Likelihood** | Any (`Marginal`: Gaussian only; `Latent`: any, via explicit sampling of $f$) | Gaussian only (conjugate) | Any — `.prior()` gives you $f$ to plug into any likelihood, just like `Latent` |
-        | **Key constraint** | None beyond cost | Approximation quality depends on inducing point count/placement | Stationary kernels with a known power spectral density only; input dim practically $\lesssim 3$; needs $m$/boundary tuned to the data's lengthscales |
-        | **What we saw here** | Notebooks 1–3: up to ~200 points, seconds | Part B: 450 points, 25 inducing points, ~30s | Part C: 8,760 points, ~20–40 basis coefficients total, under a minute |
+    | | **Exact** (`pm.gp.Marginal` / `pm.gp.Latent`) | **Sparse** (`pm.gp.MarginalApprox`) | **HSGP** (`pm.gp.HSGP` / `HSGPPeriodic`) |
+    |---|---|---|---|
+    | **Cost** | $O(n^3)$ per gradient eval | $O(nm^2)$, $m$ = # inducing points | $O(nm)$, $m$ = # basis functions (linear in $n$) |
+    | **When to use** | Small/moderate $n$ (up to a few hundred–low thousands); need exact inference | Moderate–large $n$; conjugate (Gaussian-noise) likelihoods; comfortable choosing inducing points | Large $n$ (thousands+); need speed and are willing to restrict to stationary kernels |
+    | **Likelihood** | Any (`Marginal`: Gaussian only; `Latent`: any, via explicit sampling of $f$) | Gaussian only (conjugate) | Any — `.prior()` gives you $f$ to plug into any likelihood, just like `Latent` |
+    | **Key constraint** | None beyond cost | Approximation quality depends on inducing point count/placement | Stationary kernels with a known power spectral density only; input dim practically $\lesssim 3$; needs $m$/boundary tuned to the data's lengthscales |
+    | **What we saw here** | Notebooks 1–3: up to ~200 points, seconds | Part B: 450 points, 25 inducing points, ~30s | Part C: 8,760 points, ~20–40 basis coefficients total, under a minute |
 
-        In practice: start exact whenever you can afford to (it is the
-        easiest to reason about and has no approximation error to worry
-        about); reach for sparse GPs when $n$ grows into the
-        thousands–tens-of-thousands with a Gaussian likelihood and you can
-        tolerate a modest, controllable approximation; reach for HSGP when
-        $n$ is large, your kernel is stationary, and your input dimension
-        is low — as here, where it is the only one of the three that makes
-        fitting the full 8,760-point series practical at all.
-        """
-    )
+    In practice: start exact whenever you can afford to (it is the
+    easiest to reason about and has no approximation error to worry
+    about); reach for sparse GPs when $n$ grows into the
+    thousands–tens-of-thousands with a Gaussian likelihood and you can
+    tolerate a modest, controllable approximation; reach for HSGP when
+    $n$ is large, your kernel is stationary, and your input dimension
+    is low — as here, where it is the only one of the three that makes
+    fitting the full 8,760-point series practical at all.
+    """)
     return
 
 
