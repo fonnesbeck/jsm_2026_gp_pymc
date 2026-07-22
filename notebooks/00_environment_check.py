@@ -70,15 +70,17 @@ def _(dataframes, pm):
     x = np.linspace(0, 10, 20)
     y = np.sin(x) + 0.1 * np.random.default_rng(0).standard_normal(x.size)
 
-    with pm.Model() as env_check_model:
-        ell = pm.Gamma("ell", alpha=2, beta=1)
-        eta = pm.HalfCauchy("eta", beta=5)
-        cov_func = eta**2 * pm.gp.cov.Matern52(1, ell)
+    coords = {"obs": np.arange(20), "feature": ["x"]}
+    with pm.Model(coords=coords) as env_check_model:
+        X = pm.Data("X", x.reshape(-1, 1), dims=("obs", "feature"))
+        y_obs = pm.Data("y_obs", y, dims="obs")
+        ell = pm.LogNormal("ell", 0, 1)
+        eta = pm.HalfNormal("eta", 1)
+        sigma = pm.HalfNormal("sigma", 0.5)
+        cov_func = eta**2 * pm.gp.cov.Matern52(1, ls=ell)
         mean_func = pm.gp.mean.Zero()
         gp = pm.gp.Marginal(mean_func=mean_func, cov_func=cov_func)
-
-        sigma = pm.HalfCauchy("sigma", beta=5)
-        gp.marginal_likelihood("obs", X=x.reshape(-1, 1), y=y, sigma=sigma)
+        gp.marginal_likelihood("y", X=X, y=y_obs, sigma=sigma, dims="obs")
 
     # Compile the logp function without sampling to confirm the model builds.
     env_check_model.compile_logp()(env_check_model.initial_point())
@@ -86,7 +88,7 @@ def _(dataframes, pm):
 
     assert len(dataframes) == 5
     print("GP model compiled successfully (no sampling performed).")
-    return (graph,)
+    return graph, env_check_model, gp
 
 
 @app.cell
