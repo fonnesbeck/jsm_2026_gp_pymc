@@ -88,7 +88,7 @@ def _(dataframes, pm):
 
     assert len(dataframes) == 5
     print("GP model compiled successfully (no sampling performed).")
-    return graph, env_check_model, gp
+    return (graph,)
 
 
 @app.cell

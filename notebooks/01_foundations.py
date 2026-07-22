@@ -101,12 +101,10 @@ def _(mo):
         RANDOM_SEED,
         az,
         data_dir,
-        execute_models,
-        eti,
         eti_bounds,
+        execute_models,
         go,
         inference_health,
-        make_subplots,
         multivariate_normal,
         norm,
         np,
@@ -558,7 +556,14 @@ def _(az, warmup_idata):
 
 
 @app.cell
-def _(RANDOM_SEED, pm, posterior_subset, results_dir, warmup_idata, warmup_model):
+def _(
+    RANDOM_SEED,
+    pm,
+    posterior_subset,
+    results_dir,
+    warmup_idata,
+    warmup_model,
+):
     with warmup_model:
         warmup_ppc = pm.sample_posterior_predictive(
             posterior_subset(warmup_idata),
@@ -621,11 +626,11 @@ def _(PYMC_BLUE, PYMC_GREEN, conc_vals, go, mo, time_vals, warmup_ppc):
         template="plotly_white",
     )
     mo.vstack([warmup_ppc_fig, warmup_residual_fig])
-    return warmup_ppc_mean, warmup_residuals
+    return (warmup_residuals,)
 
 
 @app.cell(hide_code=True)
-def _(conc_vals, mo, warmup_residuals, warmup_summary):
+def _(mo, warmup_residuals, warmup_summary):
     mo.md(
         f"""
         The posterior mean of $\\mu$ is
@@ -942,10 +947,10 @@ def _(az, pw_idata):
 def _(
     PYMC_BLUE,
     PYMC_GREEN,
-    eti_bounds,
     conc_mean,
     conc_std,
     conc_vals,
+    eti_bounds,
     go,
     np,
     pw_idata,
@@ -1687,9 +1692,9 @@ def _(
     conc_std,
     conc_vals,
     conc_z,
+    eti_bounds,
     expquad,
     go,
-    eti_bounds,
     np,
     time_grid,
     time_mean,

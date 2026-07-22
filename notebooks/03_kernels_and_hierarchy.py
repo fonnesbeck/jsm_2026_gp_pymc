@@ -96,19 +96,17 @@ def _(mo):
         PYMC_DARK_GREEN,
         PYMC_LIGHT_BLUE,
         RANDOM_SEED,
-        az,
         data_dir,
-        execute_models,
-        eti,
         eti_bounds,
-        inference_health,
+        execute_models,
         go,
+        inference_health,
         np,
         perf_counter,
         pl,
         pm,
-        pt,
         posterior_subset,
+        pt,
         results_dir,
         sample_fresh_model_predictions,
         z,
@@ -629,13 +627,7 @@ def _(
 
 
 @app.cell
-def _(
-    RANDOM_SEED,
-    build_tide_model,
-    pm,
-    posterior_subset,
-    tide_idata,
-):
+def _(RANDOM_SEED, build_tide_model, pm, posterior_subset, tide_idata):
     tide_observed_model = build_tide_model()
     with tide_observed_model:
         tide_observed_ppc = pm.sample_posterior_predictive(
@@ -663,6 +655,7 @@ def _(tide_observed_ppc, y_tide):
             [0.055, 0.945], dim=("chain", "draw")
         ),
     }
+    return
 
 
 @app.cell
@@ -851,7 +844,6 @@ def _(np, places, z):
         places_diabetes_std,
         places_lat,
         places_lon,
-        places_obesity_z,
         y_places,
     )
 
@@ -1158,17 +1150,11 @@ def _(eti_bounds, places_idata):
         ),
     }
     places_directional_summary
-    return (places_directional_summary,)
+    return
 
 
 @app.cell
-def _(
-    RANDOM_SEED,
-    build_places_model,
-    pm,
-    places_idata,
-    posterior_subset,
-):
+def _(RANDOM_SEED, build_places_model, places_idata, pm, posterior_subset):
     places_observed_model = build_places_model()
     with places_observed_model:
         places_observed_ppc = pm.sample_posterior_predictive(
@@ -1192,6 +1178,7 @@ def _(places_observed_ppc, y_places):
             [0.055, 0.945], dim=("chain", "draw")
         ),
     }
+    return
 
 
 @app.cell(hide_code=True)
@@ -1227,7 +1214,7 @@ def _(east_km, north_km, np):
     # Zero is average obesity on the standardized covariate scale.
     X_grid = np.column_stack([spatial_grid, np.zeros(len(spatial_grid))])
     in_hull_grid = in_hull.reshape(grid_n, grid_n)
-    return EAST_MESH, NORTH_MESH, X_grid, grid_n, in_hull_grid
+    return EAST_MESH, NORTH_MESH, X_grid, in_hull_grid
 
 
 @app.cell
@@ -1252,16 +1239,15 @@ def _(
     EAST_MESH,
     NORTH_MESH,
     PYMC_BLUE,
+    east_km,
     go,
-    grid_n,
     in_hull_grid,
+    north_km,
     places,
     places_diabetes,
     places_diabetes_mean,
     places_diabetes_std,
     places_grid_ppc,
-    east_km,
-    north_km,
 ):
     grid_mean = places_grid_ppc["predictions"]["f_grid"].mean(
         dim=("chain", "draw")
@@ -1387,6 +1373,7 @@ def _(data_dir, pl):
     spin.head()
     return (spin,)
 
+
 @app.cell
 def _(np, spin, z):
     pitchers = spin["pitcher"].unique(maintain_order=True).sort().to_list()
@@ -1412,9 +1399,7 @@ def _(np, spin, z):
         date_idx,
         day_grid,
         day_grid_z,
-        day_mean,
         day_of_season,
-        day_std,
         day_z,
         n_pitches,
         pitcher_idx_num,
@@ -1467,6 +1452,8 @@ def _(mo):
     effective-sample-size assumption.
     """)
     return
+
+
 @app.cell
 def _(
     date_idx,
@@ -1561,7 +1548,7 @@ def _(
         return spin_model
 
     spin_model = build_spin_model()
-    return build_spin_model, spin_model
+    return (spin_model,)
 
 
 @app.cell(hide_code=True)
@@ -1769,7 +1756,7 @@ def _(np, pitcher_idx_num, pitchers, spin_observed_ppc, spin_z):
         .quantile([0.055, 0.945], dim=("chain", "draw")),
     }
     spin_ppc_by_pitcher
-    return (spin_ppc_by_pitcher,)
+    return
 
 
 @app.cell

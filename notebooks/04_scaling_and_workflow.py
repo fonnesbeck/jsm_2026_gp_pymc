@@ -520,7 +520,13 @@ def _(X_sparse, Xu_init, build_sparse_gp_model, np, y_sparse):
 
 
 @app.cell
-def _(RANDOM_SEED, pm, posterior_subset, sparse_idata, sparse_prediction_model):
+def _(
+    RANDOM_SEED,
+    pm,
+    posterior_subset,
+    sparse_idata,
+    sparse_prediction_model,
+):
     sparse_predictive_subset = posterior_subset(sparse_idata)
     with sparse_prediction_model:
         sparse_predictions = pm.sample_posterior_predictive(
@@ -529,7 +535,7 @@ def _(RANDOM_SEED, pm, posterior_subset, sparse_idata, sparse_prediction_model):
             predictions=True,
             random_seed=RANDOM_SEED,
         )
-    return sparse_predictions, sparse_predictive_subset
+    return (sparse_predictions,)
 
 
 @app.cell
@@ -1043,14 +1049,15 @@ def _(
     hsgp_path = results_dir / "04_hsgp_full_year.nc"
     hsgp_idata_to_save.to_netcdf(hsgp_path)
     return (hsgp_path,)
+
+
 @app.cell
-def _(inference_health, hsgp_idata, hsgp_model):
+def _(hsgp_idata, hsgp_model, inference_health):
     hsgp_summary, hsgp_n_div, hsgp_health_passed = inference_health(
         hsgp_idata, hsgp_model
     )
     hsgp_summary
-    return hsgp_health_passed, hsgp_n_div
-
+    return
 
 
 @app.cell

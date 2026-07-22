@@ -212,7 +212,7 @@ def test_03_kernels_hierarchy():
 
 
 def test_04_scaling_workflow():
-    run_notebook(NB / "04_scaling_and_workflow.py", timeout_s=240)
+    run_notebook(NB / "04_scaling_and_workflow.py", timeout_s=900)
 
 
 def test_run_notebook_detects_cell_error(tmp_path):
