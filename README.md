@@ -1,4 +1,6 @@
-# JSM 2026 Continuing Education Course Proposal Draft
+# Nonparametric Bayesian Modeling: An Introduction to Gaussian Processes with PyMC
+
+JSM 2026 Continuing Education Course 
 
 ## SESSION DETAILS
 
@@ -14,13 +16,10 @@ As listed in the JSM 2026 program:
 | **Venue** | Thomas M. Menino Convention & Exhibition Center, Boston |
 | **Instructor** | Chris Fonnesbeck (PyMC Labs) |
 
-## COURSE TITLE
-
-Nonparametric Bayesian Modeling: An Introduction to Gaussian Processes with PyMC
 
 ## INSTRUCTOR
 
-1. Christopher Fonnesbeck (PyMC Labs; Email: fonnesbeck@gmail.com)
+1. Christopher Fonnesbeck (PyMC Labs; Email: chris.fonnesbeck@pymc-labs.com)
 
 ## COURSE LENGTH
 
