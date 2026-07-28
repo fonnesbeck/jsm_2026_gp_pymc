@@ -1,6 +1,6 @@
 # Nonparametric Bayesian Modeling: An Introduction to Gaussian Processes with PyMC
 
-JSM 2026 Continuing Education Course
+*JSM 2026 Continuing Education Course*
 
 Gaussian processes (GPs) are Bayesian models for unknown functions. In this
 hands-on course, you will build, fit, check, and scale GP models with
@@ -163,7 +163,7 @@ The four-hour course covers:
 ## Instructor
 
 Chris Fonnesbeck is a Principal Quantitative Analyst at PyMC Labs and an
-Adjunct Associate Professor at Vanderbilt University Medical Center. He has
+Adjoint Associate Professor at the Vanderbilt University Medical Center. He has
 20 years of data-science experience in academia, industry, and government,
 including seven years of baseball research with the Philadelphia Phillies, New
 York Yankees, and Milwaukee Brewers. His work spans computational statistics,
