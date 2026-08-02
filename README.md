@@ -18,11 +18,13 @@ working throughout in interactive [marimo](https://marimo.io/) notebooks.
 
 ## Course details
 
-- **Date:** Monday, August 3, 2026
-- **Time:** 8:30 AM–12:30 PM
-- **Room:** CC-153B
-- **Venue:** Thomas M. Menino Convention & Exhibition Center, Boston
-- **Instructor:** Chris Fonnesbeck, PyMC Labs
+| Detail | |
+|---|---|
+| **Date** | Monday, August 3, 2026 |
+| **Time** | 8:30 AM–12:30 PM |
+| **Room** | CC-153B |
+| **Venue** | Thomas M. Menino Convention & Exhibition Center, Boston |
+| **Instructor** | Chris Fonnesbeck, PyMC Labs |
 
 ## Before the course
 
