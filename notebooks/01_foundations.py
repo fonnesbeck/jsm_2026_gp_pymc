@@ -542,7 +542,7 @@ def _(conc_std, conc_z, time_std, time_z):
             "concentration_data", conc_z, dims="observation"
         )
         t_lo, t_hi = float(time_z.min()), float(time_z.max())
-    
+
         peak = pm.Normal("peak", mu=0, sigma=1)
         rise = pm.HalfNormal("rise", sigma=pw_rise_scale)
         decay = pm.HalfNormal("decay", sigma=pw_decay_scale)
@@ -565,12 +565,6 @@ def _(conc_std, conc_z, time_std, time_z):
 
     pw_model
     return (pw_model,)
-
-
-@app.cell
-def _(pw_model):
-    pm.model_to_graphviz(pw_model)
-    return
 
 
 @app.cell(hide_code=True)
@@ -781,24 +775,29 @@ def _(pw_idata, pw_map):
         name: float(pw_idata["posterior"][name].mean())
         for name in ("peak", "rise", "decay", "tau", "sigma")
     }
+
+
+    def marginal_mode(samples):
+        """Mode of a single parameter's marginal posterior, via KDE."""
+        grid = np.linspace(samples.min(), samples.max(), 2000)
+        return float(grid[np.argmax(gaussian_kde(samples)(grid))])
+
+
+    pw_marginal_modes = {
+        name: marginal_mode(pw_idata["posterior"][name].values.ravel())
+        for name in pw_posterior_means
+    }
+    pw_sigma_mode = pw_marginal_modes["sigma"]
+
     pl.DataFrame(
         {
             "parameter": list(pw_posterior_means),
             "MAP": [round(float(pw_map[name]), 3) for name in pw_posterior_means],
+            "marginal mode": [round(pw_marginal_modes[name], 3) for name in pw_posterior_means],
             "posterior mean": [round(value, 3) for value in pw_posterior_means.values()],
         }
     )
-    return (pw_posterior_means,)
-
-
-@app.cell(hide_code=True)
-def _(pw_idata):
-    # The marginal mode of sigma alone, not the sigma coordinate of the joint MAP.
-    pw_sigma_samples = pw_idata["posterior"]["sigma"].values.ravel()
-    pw_sigma_grid = np.linspace(pw_sigma_samples.min(), pw_sigma_samples.max(), 2000)
-    pw_sigma_mode = float(pw_sigma_grid[np.argmax(gaussian_kde(pw_sigma_samples)(pw_sigma_grid))])
-    pw_sigma_mode
-    return (pw_sigma_mode,)
+    return pw_posterior_means, pw_sigma_mode
 
 
 @app.cell(hide_code=True)
@@ -954,21 +953,20 @@ def _(pw_idata):
         pw_idata,
         var_names=["peak", "rise", "decay", "tau", "sigma"],
         compact=True,
-        figure_kwargs={"figsize": (5, 3.5)},
+        figure_kwargs={"figsize": (11, 7)},
     )
+    trace_plot.viz["figure"].item()
+    return
+
+
+@app.cell
+def _(pw_idata):
     rank_plot = az.plot_rank(
         pw_idata,
         var_names=["peak", "rise", "decay", "tau", "sigma"],
-        figure_kwargs={"figsize": (5, 3.5)},
+        figure_kwargs={"figsize": (11, 5)},
     )
-    mo.hstack(
-        [
-            mo.mpl.interactive(trace_plot.viz["figure"].item()),
-            mo.mpl.interactive(rank_plot.viz["figure"].item()),
-        ],
-        gap=1,
-        justify="center",
-    )
+    rank_plot.viz["figure"].item()
     return
 
 
