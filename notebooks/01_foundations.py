@@ -46,10 +46,6 @@ def _():
     mo.md(r"""
     # Foundations: A PyMC Primer and an Introduction to Gaussian Processes
 
-    Welcome to the first hour of the workshop. Nothing here assumes you
-    have seen a Gaussian process before; it *does* assume you are
-    comfortable reading a little probability notation and some Python.
-
     This notebook builds the working vocabulary the rest of the workshop
     relies on: the PyMC model-building API, and the Bayesian workflow ,
     specify a model, check its prior, sample, check convergence, interpret
@@ -72,8 +68,7 @@ def _():
     mo.md(r"""
     ### The Bayesian paradigm
 
-    Everything in this workshop is Bayesian, so it is worth stating the
-    core idea plainly. Bayesian inference treats unknown quantities as
+    Bayesian inference treats unknown quantities as
     **random variables with distributions** and updates those
     distributions in light of data. Three objects do all the work:
 
@@ -447,13 +442,51 @@ def _():
     `pm.Deterministic("name", expr)` records its value with every posterior
     draw, so a fitted quantity arrives alongside the parameters instead of
     having to be recomputed afterwards. Use the named form for anything you
-    want to plot or report and leave intermediate algebra anonymous in order to reduce unnecessary storage.
-
-    **Data nodes** Wrapping an input array in
-    `pm.Data` places it inside the graph as a named, replaceable node.
-    After fitting, `pm.set_data({"name": new_values})` swaps it, which is
-    how a fitted model predicts at new inputs without being rebuilt.
+    want to plot or report and leave intermediate algebra anonymous in order
+    to reduce unnecessary storage.
     """)
+    return
+
+
+@app.cell
+def _():
+    with pm.Model() as demo_det_model:
+        demo_det_log_ke = pm.Normal("log_ke", mu=0, sigma=1)
+        demo_det_ke = pm.Deterministic("ke", pm.math.exp(demo_det_log_ke))
+        demo_det_half_life = pm.math.log(2) / demo_det_ke
+
+    demo_det_model
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    **Data nodes**: Wrapping an input array in `pm.Data` places it inside
+    the graph as a named, replaceable node. After fitting,
+    `pm.set_data({"name": new_values})` swaps it, which is how a fitted
+    model predicts at new inputs without being rebuilt.
+    """)
+    return
+
+
+@app.cell
+def _(time_z):
+    with pm.Model() as demo_data_model:
+        demo_data_time = pm.Data("time", time_z)
+        demo_data_slope = pm.Normal("slope", mu=0, sigma=1)
+        pm.Deterministic("mu", demo_data_slope * demo_data_time)
+
+    demo_data_model
+    return demo_data_model, demo_data_time
+
+
+@app.cell
+def _(demo_data_model, demo_data_time):
+    with demo_data_model:
+        pm.set_data({"time": np.array([0.0, 0.5, 1.0])})
+
+    demo_data_time.get_value()
     return
 
 
@@ -462,7 +495,7 @@ def _():
     mo.md(r"""
     ### A piecewise-linear baseline: two slopes meeting at a peak
 
-    Every model in this half of the notebook works on a **standardized**
+    We will transform our data to a **standardized**
     scale: `z()` subtracts a variable's mean and divides by its standard
     deviation, so `time_z` and `conc_z` are both unitless with mean 0 and
     sd 1. That keeps a prior scale like `HalfNormal(1)` comparable across
@@ -592,22 +625,8 @@ def _(pw_model):
 
 
 @app.cell(hide_code=True)
-def _(conc_mean, conc_std, conc_z, pw_prior_pred, time_z):
+def _(conc_z, pw_prior_pred, time_z):
     pw_prior_curves = pw_prior_pred["prior"]["mu_pw"]
-    pw_prior_mu_mgl = pw_prior_curves * conc_std + conc_mean
-    pw_prior_obs_mgl = pw_prior_pred["prior_predictive"]["conc_obs"] * conc_std + conc_mean
-    pw_negative_fraction = float((pw_prior_obs_mgl < 0).mean())
-    pw_mean_negative_fraction = float((pw_prior_mu_mgl < 0).mean())
-    _mu_nonneg_mask = pw_prior_mu_mgl.values >= 0
-    pw_residual_likelihood_fraction = float(
-        (pw_prior_obs_mgl.values[_mu_nonneg_mask] < 0).mean()
-    )
-    print(f"prior predictive draws below zero (mg/L): {pw_negative_fraction:.1%}")
-    print(f"prior mean function below zero (mg/L): {pw_mean_negative_fraction:.1%}")
-    print(
-        "observations below zero given mean function >= 0: "
-        f"{pw_residual_likelihood_fraction:.1%}"
-    )
     _order = np.argsort(time_z)
 
     pw_prior_fig = go.Figure()
@@ -641,84 +660,16 @@ def _(conc_mean, conc_std, conc_z, pw_prior_pred, time_z):
         template="plotly_white",
     )
     pw_prior_fig
-    return (
-        pw_mean_negative_fraction,
-        pw_negative_fraction,
-        pw_prior_curves,
-        pw_prior_mu_mgl,
-        pw_residual_likelihood_fraction,
-    )
-
-
-@app.cell(hide_code=True)
-def _(
-    conc_z,
-    pw_mean_negative_fraction,
-    pw_negative_fraction,
-    pw_prior_curves,
-    pw_prior_mu_mgl,
-    pw_residual_likelihood_fraction,
-):
-    mo.md(f"""
-    **Plausibility check, and it fails.** The prior mean function spans
-    roughly [{float(pw_prior_curves.min()):.1f}, {float(pw_prior_curves.max()):.1f}]
-    on the standardized scale, against an observed range of
-    [{conc_z.min():.2f}, {conc_z.max():.2f}]. Containing the observed range
-    is not the criterion: on the original scale that low end is
-    {float(pw_prior_mu_mgl.min()):.0f} mg/L. Nothing in the model pins the
-    curve near zero at dose time, so `rise` extrapolated backward from a
-    free $\\tau$ can pull the early part of the curve arbitrarily negative.
-    A modeller who saw this would anchor $\\mu(0)$ at (or near) zero, so
-    `rise` is set by the peak and its timing rather than left free, a
-    change to the model itself, out of scope for this notebook.
-
-    That same structural gap, not the likelihood, is why so many prior
-    predictive draws are negative. **{pw_negative_fraction:.1%}** of the
-    observations this model expects to generate fall below zero, and
-    **{pw_mean_negative_fraction:.1%}** of the prior *mean* functions are
-    already negative somewhere, essentially all of the problem is there
-    before the likelihood adds any noise. Only
-    **{pw_residual_likelihood_fraction:.1%}** of observations are negative
-    when the mean function itself is non-negative, the most a
-    positive-support likelihood could ever fix here, and a small share of
-    the problem. The verdict of this check is about $\\mu(t)$: a mean
-    function that reaches {float(pw_prior_mu_mgl.min()):.0f} mg/L is a
-    property of the functional form, and no change of observation
-    distribution can repair it.
-    """)
     return
 
 
 @app.cell(hide_code=True)
 def _():
-    mo.vstack(
-        [
-            mo.md(
-                r"""**Question 1, prior sensitivity.** The `rise` prior above
-                is scaled from a belief in mg/L per hour. Suppose you ignored
-                the units and wrote `rise ~ HalfNormal(1)` straight onto the
-                standardized axis. Before rerunning, predict the prior curves,
-                whether the posterior could reach the observed peak, and where
-                the unexplained variation would end up."""
-            ),
-            mo.accordion(
-                {
-                    "Solution": mo.md(
-                        r"""The prior curves climb far too slowly: the observed
-                        absorption slope is about 21 on the standardized scale,
-                        roughly twenty times `HalfNormal(1)`'s own scale out,
-                        so the likelihood cannot overcome it. The posterior for
-                        `rise` piles up against the prior, the fitted curve
-                        under-shoots the peak badly, and `sigma` inflates ,
-                        from about 0.6 mg/L to 2.6 mg/L, to absorb the
-                        misfit. $\tau$ then drifts anywhere along the day,
-                        because no knot position helps a curve that cannot
-                        climb."""
-                    )
-                }
-            ),
-        ]
-    )
+    mo.md(r"""
+    These priors are looser than we would like, but they do not rule out
+    anything sensible, so the data can narrow things down. We fit the model
+    as it stands.
+    """)
     return
 
 
@@ -1068,6 +1019,29 @@ def _():
     return
 
 
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    ### Posterior predictive sampling
+
+    The prior predictive check asked what the model could produce before it
+    saw any data. The posterior predictive check asks the same question
+    after fitting: draw parameters from the posterior, simulate a full
+    dataset from each draw, and see whether those simulated datasets look
+    like the data we actually have.
+
+    This is the check that evaluates model fit. Divergences and
+    $\widehat{R}$ tell you whether the sampler did its job, not whether the
+    model was worth fitting, and a model can converge cleanly to a
+    posterior that generates data nothing like the observations.
+
+    `pm.sample_posterior_predictive` runs the likelihood forward once per
+    posterior draw, so the result carries observation noise as well as
+    uncertainty in the curve.
+    """)
+    return
+
+
 @app.cell
 def _(pw_idata, pw_model):
     with pw_model:
@@ -1140,128 +1114,13 @@ def _(pw_ppc_table, pw_residuals):
     The posterior-predictive RMSE across replicate datasets is printed
     above (median {pw_ppc_table["replicate_RMSE_50%"]:.2f} on the
     standardized scale, 89% range {pw_ppc_table["replicate_RMSE_5.5%"]:.2f}
-    to {pw_ppc_table["replicate_RMSE_94.5%"]:.2f}). More revealingly, the
+    to {pw_ppc_table["replicate_RMSE_94.5%"]:.2f}). 
+
+    More important, the
     residual sequence ranges from {float(pw_residuals.min()):.2f} to
     {float(pw_residuals.max()):.2f} and retains systematic curvature
-    around the sharp knot. This is a model discrepancy, not a
-    sampler-tuning problem: the next section explains why a smooth
-    functional prior is needed.
+    around the sharp knot. This is reveals the limitation of using a piecewis
     """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(tau_hi, tau_lo):
-    mo.md(rf"""
-    ### Diagnosis: why the piecewise model is inadequate
-
-    **1. The kink is unphysical.** A real absorption/elimination curve is
-    *smooth*, it eases through its peak, it does not turn a hard corner.
-    The broken stick puts an infinitely sharp vertex at $\tau$, which no
-    drug's pharmacokinetics actually do. The model can only ever
-    approximate a smooth hump with two straight lines and an angle.
-
-    **2. The knot is confidently placed and still an artifact.** The data
-    pin $\tau$ down tightly: the 89% interval computed below is only
-    {tau_hi - tau_lo:.2f} hours wide (about {(tau_hi - tau_lo) * 60:.0f}
-    minutes), and the light-blue draws above all break at nearly the same
-    place, so the posterior mean carries the corner too. But a sharp
-    estimate is only the model answering the question it was built to ask.
-    This functional form *requires* a corner to exist somewhere; the
-    sampler obliges and reports the best available location with tight
-    uncertainty. Nothing in that number tests whether the drug has a
-    corner at all. The plot below shows how narrow the interval is, which
-    is the point: the piecewise model states a peak time more confidently
-    than the shape of the data warrants.
-
-    **3. Straight segments miss the curvature.** Between the knots the
-    model is forced to be exactly linear, so it *undershoots* the rounded
-    top of the rise and cannot follow the gentle concave-up flattening of
-    the decay tail. The residual structure you can see around the fitted
-    line is the curvature the model has no vocabulary for.
-
-    Ultimately, **we had to choose a functional form, and the form
-    we chose is wrong in ways the data cannot address.** We could keep
-    patching, add more change points, swap in an exponential decay, bolt on an
-    absorption compartment, but each patch is another hand-specified
-    commitment. What we actually want is a model that says only "the
-    function is smooth" and lets the data supply the shape.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(pw_idata, time_mean, time_std):
-    # Convert the tau posterior back to hours for interpretation.
-    tau_hours = pw_idata["posterior"]["tau"] * time_std + time_mean
-    tau_lo, tau_hi = (float(value) for value in eti_bounds(tau_hours))
-
-    tau_fig = go.Figure()
-    tau_fig.add_trace(
-        go.Histogram(
-            x=tau_hours.values.ravel(),
-            histnorm="probability density",
-            marker=dict(color=PYMC_GREEN),
-            opacity=0.75,
-            name="τ posterior",
-        )
-    )
-    tau_fig.add_vline(x=float(tau_lo), line=dict(color="black", dash="dash"))
-    tau_fig.add_vline(x=float(tau_hi), line=dict(color="black", dash="dash"))
-    tau_fig.update_layout(
-        title="Posterior of the peak time τ (hours) — a narrow interval for a corner that is not real",
-        xaxis_title="Estimated peak time τ (hours)",
-        yaxis_title="density",
-        template="plotly_white",
-    )
-    tau_fig
-    return tau_hi, tau_lo
-
-
-@app.cell(hide_code=True)
-def _(tau_hi, tau_lo):
-    mo.md(f"""
-    The 89% posterior interval for the peak time runs from about
-    {tau_lo:.2f} to {tau_hi:.2f} hours, a span of only
-    {tau_hi - tau_lo:.2f} hours. That
-    precision is worth examining critically: it is a confident answer to the
-    question *where is the corner*, asked of a curve that has no corner.
-    A narrow posterior reports how well a parameter is determined **given
-    the model**, not whether the model deserves the parameter.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(tau_hi, tau_lo):
-    mo.vstack(
-        [
-            mo.md(
-                rf"""**Question 3, a sharp estimate of the wrong thing.**
-                The posterior for $\tau$ above is narrow, only
-                {tau_hi - tau_lo:.2f} hours wide. Does that narrowness
-                license the claim "the peak occurs at $\tau$ hours"? What
-                would you have to check first, and what would the same plot
-                look like under a model with no knot at all?"""
-            ),
-            mo.accordion(
-                {
-                    "Solution": mo.md(
-                        r"""No. The interval is conditional on a functional
-                        form that forces a corner to exist somewhere, so the
-                        sampler must place one, and it places it precisely.
-                        Check the posterior-predictive residuals for the
-                        curvature the two straight segments cannot follow
-                        before quoting the number. A smooth model has no
-                        $\tau$ to report at all: it estimates the whole curve
-                        and lets the peak be wherever the function turns over,
-                        with uncertainty that reflects the sparse data near
-                        the top."""
-                    )
-                }
-            ),
-        ]
-    )
     return
 
 
@@ -1425,39 +1284,25 @@ def _():
     `patsy` turns knots into the **basis matrix** $B$. Each column is one
     basis function evaluated at every age, and `degree=3` makes them cubic.
 
-    `include_intercept=True` keeps the full set of basis functions, and that
-    has a consequence worth stating now because it decides how the model is
-    written. At every age these columns sum to exactly one. A basis with
-    that property already contains a constant: any overall level the curve
-    needs can be produced by raising all nine weights together.
+    `include_intercept=True` keeps the full set of basis functions; the
+    `- 1` drops the separate column of ones that patsy adds to every design
+    matrix. The full basis sums to one at every age, so it already carries
+    the constant. A separate intercept would be an exact duplicate, leaving
+    a flat ridge in the posterior that no amount of data can pin down,
+    which is why the model below has none.
 
-    So the model below has **no separate intercept**. Adding one would not
-    be merely redundant in the loose sense, it would be exactly redundant,
-    since adding $c$ to the intercept and subtracting $c$ from every weight
-    leaves the fitted curve unchanged to machine precision. The posterior
-    would contain a perfectly flat ridge that no amount of data could pin
-    down, and the only thing holding the parameters in place would be their
-    priors.
-
-    That failure is quiet. It produces no divergences and a healthy-looking
-    $\widehat{R}$; the only symptom is an effective sample size far below
-    what the number of draws should buy, because the sampler spends its time
-    sliding along the ridge instead of exploring. Keep that in mind
-    whenever you read the ESS column for a basis-expansion model.
-
-    That quietness is specific to an **exact** tie like this one. A model
-    that is merely *near*-collinear rather than exactly redundant can
-    instead announce itself as a real $\widehat{R}$ failure, so do not
-    take "ESS is the only symptom" as a general rule for collinearity.
+    If you do add one by mistake, expect a low effective sample size rather
+    than divergences or a bad $\widehat{R}$. The sampler slides along the
+    ridge instead of getting stuck, so nothing looks broken.
 
     We evaluate the basis on the *unique* ages rather than on all
     observations, because every batter of the same age gets the same basis
-    row. The model indexes into it.
+    row.
     """)
     return
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(knot_list, swing_ages):
     spline_basis = np.asarray(
         dmatrix(
@@ -1466,8 +1311,7 @@ def _(knot_list, swing_ages):
         ),
         order="F",
     )
-    print(f"basis shape: {spline_basis.shape}, row sums span "
-          f"{spline_basis.sum(axis=1).min():.4f} to {spline_basis.sum(axis=1).max():.4f}")
+
     spline_basis.shape
     return (spline_basis,)
 
@@ -1534,6 +1378,15 @@ def _():
     are deliberately weak: we are not claiming to know the shape, only its
     scale. (As with the Normal priors earlier, that 3 is a standard
     deviation, not a variance.)
+
+    The knots do not appear anywhere in the model, and that is the point.
+    They are fixed choices, not parameters: they were used once to build
+    $B$, and everything the model knows about them is already baked into
+    the shape of its columns. Their influence is real but indirect, since
+    the number of knots sets the number of weights and therefore how much
+    the curve can bend, and their placement decides where it can bend.
+    Change the knots and you get a different $B$, a different number of
+    weights, and a different model.
 
     Note what is *not* in this model: any statement about smoothness. The
     weights are independent under the prior. Whatever smoothness the fit
@@ -1777,7 +1630,7 @@ def _():
     mo.vstack(
         [
             mo.md(
-                r"""**Question 4, how many knots?** We chose seven knots at
+                r"""**How many knots?** We chose seven knots at
                 age quantiles. Predict what changes if you refit with
                 `num_knots = 20`: the shape of the fitted curve, the width of
                 the 89% band, and the diagnostics. Then say which of those
@@ -1944,7 +1797,7 @@ def _(spline_ppc_r2, spline_ppc_sigma_mean, spline_ppc_total_sd):
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
-    ### What splines cost, and what comes next
+    ### Pros and cons of splines
 
     It fits without us having claimed to know the functional form. That is
     real progress over the piecewise model.
@@ -1962,45 +1815,6 @@ def _():
     smoothness in that curve is a side effect of overlapping basis
     functions, a property of the *basis we built*, not of a belief we
     stated.
-
-    A Gaussian process inverts that. You state the belief directly, "the
-    function is smooth, on roughly this scale, with roughly this
-    amplitude", as a **covariance function**, and the data inform its
-    parameters. No knots to place, no degree to pick, no basis to design.
-
-    Notebook 2 builds that machinery from the multivariate normal you
-    already know.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _():
-    mo.md(r"""
-    ### Where we are, and what's next
-
-    You now have the full Bayesian workflow, exercised twice: specify a
-    model, check its prior predictive, sample, check convergence with the
-    divergence + `r_hat` + ESS triad, check the posterior predictive
-    against the data, and only then interpret what the posterior says. You
-    saw it carried through PyMC's core API, `pm.Data` containers,
-    `pm.Deterministic`, `pm.sample_prior_predictive`, `pm.sample`, and
-    `pm.sample_posterior_predictive` with `pm.set_data`, on two different
-    models.
-
-    Both models also shared a limitation. The piecewise-linear curve
-    committed to a functional form, a peak time and two slopes; the
-    spline traded the form for hand-picked structure, knots, a degree,
-    and a prior scale on the weights. Neither warns you when those
-    choices are wrong: both fits converged cleanly regardless.
-
-    **Notebook 2** removes that requirement. It builds the Gaussian process
-    itself: the multivariate normal machinery it rests on, a covariance
-    function, sample functions drawn from a GP prior, and GP regression as
-    conditioning. **Notebook 3** then puts that machinery to work, first in
-    the analytically convenient *marginal* (Gaussian-likelihood) case with
-    `pm.gp.Marginal`, then in the *latent* (non-Gaussian) case with
-    `pm.gp.Latent`.
     """)
     return
 
@@ -2120,6 +1934,30 @@ def _(pk_solution_idata):
             ])
         }
     )
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    ### Where we are, and what's next
+
+    You now have the full Bayesian workflow, exercised twice: specify a
+    model, check its prior predictive, sample, check convergence with the
+    divergence + `r_hat` + ESS triad, check the posterior predictive
+    against the data, and only then interpret what the posterior says. You
+    saw it carried through PyMC's core API, `pm.Data` containers,
+    `pm.Deterministic`, `pm.sample_prior_predictive`, `pm.sample`, and
+    `pm.sample_posterior_predictive` with `pm.set_data`, on two different
+    models.
+
+    Both models also shared a limitation. The piecewise-linear curve
+    committed to a functional form, a peak time and two slopes; the
+    spline traded the form for hand-picked structure, knots, a degree,
+    and a prior scale on the weights.
+
+    Gaussian processes take a different approach, providing a flexible way of estimating arbitarily non-linear functions.
+    """)
     return
 
 

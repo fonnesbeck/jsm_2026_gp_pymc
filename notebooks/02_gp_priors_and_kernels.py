@@ -553,7 +553,7 @@ def _():
         [
             mo.md(
                 r"""
-                **Question 4, condition on an added point.** Imagine
+                **Condition on an added point.** Imagine
                 appending one extra, very precise observation at the peak (say,
                 1.5 hours). Using the conditioning formula
                 $\mathbf f_*\mid\mathbf y \sim \mathcal N(K_*(K+\sigma^2
@@ -613,7 +613,7 @@ def _():
         [
             mo.md(
                 r"""
-                **Question 5, smoothness and prior implications.** In the
+                **Smoothness and prior implications.** In the
                 hand-built GP regression above we set `cond_ls = 0.6` on the
                 *standardized log-time* axis. Before changing it to 0.3, predict
                 how the prior functions, the fit near the sparse tail, and the
@@ -727,7 +727,7 @@ def _():
         [
             mo.md(
                 r"""
-                **Question 6, amplitude, prior versus posterior.** Doubling
+                **Amplitude, prior versus posterior.** Doubling
                 $\eta$ doubles the prior standard deviation of function values,
                 since $k(x,x)=\eta^2$, the widget shows that directly. Now
                 predict what it does to the *conditioned* fit further up: set
