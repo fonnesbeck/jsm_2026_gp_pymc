@@ -237,32 +237,30 @@ def build_places_diabetes(state: str = "North Carolina") -> None:
 def build_spin_rates() -> None:
     # Curated from the instats_gp fastball-spin-rate source file (MLB
     # Statcast 2021 fastball average spin rate per pitcher per game).
+    # Only the pitchers the workshop models are kept: the five with the most
+    # games, which is the set the multi-output example selects, plus Buehler,
+    # who the legacy hierarchical model in notebook 2 still fits. Sorting by
+    # (games desc, name asc) makes the Kopech/Wells tie at 43 deterministic.
     src = Path("/var/home/fonnesbeck/repos/instats_gp/data/fastball_spin_rates.csv")
-    df = (
+    full = (
         pl.read_csv(src)
         .rename({"pitcher_name": "pitcher", "avg_spin_rate": "spin_rate"})
         .drop_nulls(["pitcher", "game_date", "spin_rate"])
-        .filter(pl.col("n_pitches") >= 10)
         .unique(["pitcher", "game_date"])
     )
-    # rank pitchers by count desc then name asc; keep 3 with >=10 games
-    counts = (
-        df.group_by("pitcher").len().sort(["len", "pitcher"], descending=[True, False])
+    ranked = (
+        full.group_by("pitcher")
+        .len()
+        .sort(["len", "pitcher"], descending=[True, False])
     )
-    keep = [
-        p
-        for p in counts["pitcher"].to_list()
-        if df.filter(pl.col("pitcher") == p).height >= 10
-    ][:3]
-    keep = sorted(keep)
+    keep = ranked.head(5)["pitcher"].to_list() + ["Buehler, Walker"]
     out = (
-        df.filter(pl.col("pitcher").is_in(keep))
+        full.filter(pl.col("pitcher").is_in(keep))
         .sort(["pitcher", "game_date"])
-        .group_by("pitcher", maintain_order=True)
-        .head(10)
         .select("pitcher", "game_date", "spin_rate", "n_pitches")
     )
-    assert out.height == 30, out.height
+    assert out.height == 284, out.height
+    assert out["pitcher"].n_unique() == 6, out["pitcher"].n_unique()
     out.write_csv(DATA / "fastball_spin_rates.csv")
 
 

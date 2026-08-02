@@ -1,8 +1,10 @@
 # Datasets
 
-All files here are frozen snapshots rebuilt by `build_data.py`. No workshop
-notebook fetches data at runtime. Each entry records source, access date,
-license, units, and transformations.
+All files here are frozen snapshots. No workshop notebook fetches data at
+runtime. Most are rebuilt by `build_data.py`; the two baseball grading and
+pitch-location files are vendored from the CQS PyMC course, which has no build
+script for them. Each entry records what is known about source, units, and
+transformations.
 
 ## Environment notes
 
@@ -128,23 +130,85 @@ present on `pymc.gp` in this version.
 - **License:** MLB Statcast data as redistributed for teaching/analysis
   use in the `instats_gp` project; no additional restrictions applied
   here.
-- **Curation:** the source file covers many pitcher-games. It is
-  deterministically curated down to a small teaching-sized panel:
-  rows with a null `pitcher`/`game_date`/`spin_rate` are dropped; rows
-  with `n_pitches < 10` are dropped; duplicate `(pitcher, game_date)`
-  rows are collapsed to one; pitchers are ranked by number of
-  remaining games (descending), ties broken alphabetically, and the
-  top 3 pitchers with at least 10 qualifying games are kept (sorted
-  alphabetically by name); for each of those 3 pitchers, the first 10
-  games in date order are kept. Columns renamed from the source
-  (`pitcher_name` -> `pitcher`, `avg_spin_rate` -> `spin_rate`); rows
-  sorted by `(pitcher, game_date)`.
-- **Selected pitchers (deterministic given the source file):**
-  Buehler, Walker; Hearn, Taylor; Rodriguez, Richard.
+- **Curation:** only the six pitchers the workshop models are kept, not
+  the full 2021 season. The builder (`data/build_data.py` lines 237-264)
+  reads the source file, renames columns (`pitcher_name` -> `pitcher`,
+  `avg_spin_rate` -> `spin_rate`), drops rows with a null
+  `pitcher`/`game_date`/`spin_rate`, collapses duplicate
+  `(pitcher, game_date)` rows to one, then ranks pitchers by game count
+  (ties broken alphabetically for determinism) and keeps the five with
+  the most games — Rodriguez, Richard (64); Taylor, Josh (59); Kopech,
+  Michael (43); Wells, Tyler (43); Hearn, Taylor (42) — plus Buehler,
+  Walker (33). The top five are exactly the set the ICM multi-output
+  example selects when it takes the pitchers with the most games, so
+  nothing is silently excluded from that example. Buehler is not part of
+  the new material; he is kept only because
+  `notebooks/02_gp_priors_and_kernels.py` still fits the legacy
+  three-pitcher hierarchical model on a pinned subset that includes him.
+  Once that notebook is rebuilt, Buehler can be dropped and the file
+  becomes 251 rows across five pitchers. No filter is applied on
+  `n_pitches`; the observed range is 1-66.
+- **Rebuild caveat:** the builder reads its source from an absolute path
+  into a sibling repository,
+  `/var/home/fonnesbeck/repos/instats_gp/data/fastball_spin_rates.csv`,
+  which is not part of this repository and is not fetched over the
+  network. `build_spin_rates()` therefore only runs successfully on the
+  maintainer's machine; anyone else must re-vendor `fastball_spin_rates.csv`
+  by hand if it is ever lost.
 - **Units:** `game_date` is an ISO-8601 date string; `spin_rate` is the
   average fastball spin rate for that pitcher-game in revolutions per
   minute (rpm); `n_pitches` is the number of fastballs thrown by that
-  pitcher in that game (all rows have `n_pitches >= 10`). 3 pitchers x
-  10 games = 30 rows, no nulls.
+  pitcher in that game (observed range 1-66). 284 rows, 6 pitchers,
+  no nulls.
+
+## Batter swing-decision grades (`batter_grades_2023.csv`)
+
+- **Source:** vendored verbatim from
+  `cqs-pymc-course/notebooks/data/batter_grades_2023.csv` (the CQS PyMC
+  course, a sibling workshop repository). No upstream build script
+  produces this file in that repository either — it is itself a frozen
+  snapshot there, so there is no rebuild path to reproduce it from raw
+  Statcast data. If it is ever lost, it must be re-copied from that
+  repository rather than regenerated.
+- **Access date:** 2026-07-26 (copied into this repository).
+- **License:** derives from MLB Statcast data for the 2023 season, as
+  redistributed for teaching/analysis use in the CQS PyMC course; no
+  additional restrictions applied here.
+- **Transformations:** none — copied byte-for-byte from the source file.
+- **Shape:** 9,971 rows, 13 columns. Other columns beyond those listed
+  under Units (`batter_id`, `batter`, `season`, `level`, `bats`,
+  `throws`, `bat_speed`, `bat_to_ball`, `attack_angle`) are present in
+  the file but not used by the workshop notebooks.
+- **Units:** `age` is batter age in years (observed range 17-43);
+  `swing_decision` is a standardized swing-decision grade (float, 2 rows
+  are null because that batter has no batted-ball data to grade); `n_pa`
+  is plate appearances that season (integer, minimum observed value is 0
+  for partial-season callups with no qualifying PAs).
+
+## Called-strike locations (`taken_pitches_walker.csv`)
+
+- **Source:** vendored verbatim from
+  `cqs-pymc-course/notebooks/data/taken_pitches_walker.csv` (the CQS
+  PyMC course). No upstream build script produces this file in that
+  repository either — it is itself a frozen snapshot there, so there is
+  no rebuild path. If it is ever lost, it must be re-copied from that
+  repository rather than regenerated.
+- **Access date:** 2026-07-26 (copied into this repository).
+- **License:** derives from MLB Statcast data for the 2023 season
+  (taken/called pitches thrown by a single pitcher, Walker), as
+  redistributed for teaching/analysis use in the CQS PyMC course; no
+  additional restrictions applied here.
+- **Transformations:** none — copied byte-for-byte from the source file.
+- **Shape:** 1,568 rows, 9 columns. Other columns beyond those listed
+  under Units (`play_id`, `game_pk`, `pitcher_id`, `pitcher_name`,
+  `bats`, `throws`) are present in the file but not used by the
+  workshop notebooks.
+- **Units:** `location_x` and `location_z` are pitch location in feet
+  relative to the plate, at the front edge of home plate (observed
+  ranges are approximately [-3.03, 3.15] for `location_x` and
+  [-1.34, 5.92] for `location_z` — wider than the nominal strike-zone
+  plotting grid of [-3, 3] x [0, 6] because a few tracked pitches fall
+  well outside the zone); `is_strike` is a called-strike indicator
+  (integer 0/1, no other encodings present).
 
 <!-- per-dataset sections added by later tasks -->
