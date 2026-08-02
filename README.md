@@ -23,7 +23,6 @@ working throughout in interactive [marimo](https://marimo.io/) notebooks.
 <tr><td><strong>Time</strong></td><td>8:30 AM–12:30 PM</td></tr>
 <tr><td><strong>Room</strong></td><td>CC-153B</td></tr>
 <tr><td><strong>Venue</strong></td><td>Thomas M. Menino Convention &amp; Exhibition Center, Boston</td></tr>
-<tr><td><strong>Instructor</strong></td><td>Chris Fonnesbeck, PyMC Labs</td></tr>
 </table>
 
 ## Before the course
