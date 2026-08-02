@@ -1,5 +1,8 @@
-<img src="assets/pymc-labs-logo.png" alt="PyMC Labs" width="220">
-<img src="assets/jsm-2026-logo.png" alt="JSM 2026, Boston, MA, August 1-6" width="180" align="right">
+<p>
+  <img src="assets/pymc-labs-logo.png" alt="PyMC Labs" height="70">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="assets/jsm-2026-logo.png" alt="JSM 2026, Boston, MA, August 1-6" height="70">
+</p>
 
 # Nonparametric Bayesian Modeling: An Introduction to Gaussian Processes with PyMC
 
