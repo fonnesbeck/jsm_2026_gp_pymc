@@ -1,11 +1,22 @@
+<img src="assets/pymc-labs-logo.png" alt="PyMC Labs" width="220">
+
 # Nonparametric Bayesian Modeling: An Introduction to Gaussian Processes with PyMC
 
 *JSM 2026 Continuing Education Course*
 
-Gaussian processes (GPs) are Bayesian models for unknown functions. In this
-hands-on course, you will build, fit, check, and scale GP models with
-[PyMC](https://www.pymc.io/) through interactive
-[marimo](https://marimo.io/) notebooks.
+**Christopher Fonnesbeck, Ph.D.**
+
+Principal Data Scientist, PyMC Labs  
+Senior Data Scientist, Leeds United FC  
+Adjoint Associate Professor, Vanderbilt University Medical Center
+
+---
+
+Gaussian processes (GPs) are a flexible class of Bayesian models for learning
+nonlinear relationships and quantifying uncertainty. In this hands-on course,
+you will use [PyMC](https://www.pymc.io/) to move from GP priors and kernel
+design to fitted models, predictive checks, and scalable approximations,
+working throughout in interactive [marimo](https://marimo.io/) notebooks.
 
 ## Course details
 
