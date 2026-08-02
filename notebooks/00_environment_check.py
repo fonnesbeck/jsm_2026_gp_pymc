@@ -28,8 +28,10 @@ def _(mo):
 def _():
     import arviz as az
     import marimo
+    import patsy
     import plotly
     import polars as pl
+    import preliz as pz
     import pymc as pm
 
     print(f"pymc:    {pm.__version__}")
@@ -37,6 +39,8 @@ def _():
     print(f"marimo:  {marimo.__version__}")
     print(f"polars:  {pl.__version__}")
     print(f"plotly:  {plotly.__version__}")
+    print(f"patsy:   {patsy.__version__}")
+    print(f"preliz:  {pz.__version__}")
     return pl, pm
 
 
@@ -52,6 +56,8 @@ def _(pl):
         "noaa_tides_hourly.csv",
         "places_diabetes.csv",
         "fastball_spin_rates.csv",
+        "batter_grades_2023.csv",
+        "taken_pitches_walker.csv",
     ]
 
     dataframes = {}
@@ -86,7 +92,7 @@ def _(dataframes, pm):
     env_check_model.compile_logp()(env_check_model.initial_point())
     graph = pm.model_to_graphviz(env_check_model)
 
-    assert len(dataframes) == 5
+    assert len(dataframes) == 7
     print("GP model compiled successfully (no sampling performed).")
     return (graph,)
 

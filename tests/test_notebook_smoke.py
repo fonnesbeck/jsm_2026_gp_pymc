@@ -1,11 +1,8 @@
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
-import importlib.util
-
-import pymc as pm
-
 
 import pytest
 
@@ -42,9 +39,6 @@ def run_notebook(
             "--no-include-code",
             "-o",
             os.devnull,
-            "--",
-            "--execute-models",
-            "true",
         ],
         capture_output=True,
         text=True,
@@ -60,41 +54,72 @@ def run_notebook(
     return time.time() - start
 
 
+@pytest.mark.slow
 def test_00_environment_check():
     run_notebook(NB / "00_environment_check.py", timeout_s=120)
 
 
+_ENV_CONTRACT_SCRIPT = """\
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("environment_check", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+# app.run() executes the notebook's own `import pymc as pm` cell first. Importing
+# pymc here in the driver *before* app.run() deadlocks: pymc's import triggers
+# pytensor setup that conflicts with preliz's IPython/pygments import chain when
+# it later runs inside app.run(). Importing pymc only after app.run() reuses the
+# module the notebook already imported and avoids the conflict entirely.
+_, definitions = module.app.run()
+import pymc as pm
+
+model = definitions["env_check_model"]
+gp = definitions["gp"]
+
+assert model.coords == {"obs": tuple(range(20)), "feature": ("x",)}
+assert model.named_vars_to_dims == {
+    "X": ("obs", "feature"),
+    "y_obs": ("obs",),
+    "y": ("obs",),
+}
+assert model.named_vars["X"].get_value().shape == (20, 1)
+assert model.named_vars["y_obs"].get_value().shape == (20,)
+assert model.named_vars["ell"].owner.op.name == "lognormal"
+assert model.named_vars["eta"].owner.op.name == "halfnormal"
+assert model.named_vars["sigma"].owner.op.name == "halfnormal"
+matern = gp.cov_func._factor_list[0]
+assert isinstance(matern, pm.gp.cov.Matern52)
+assert matern.ls is model.named_vars["ell"]
+assert model.compile_logp()(model.initial_point()).shape == ()
+
+print("CONTRACT OK")
+"""
+
+
 def test_00_environment_check_gp_contract():
-    spec = importlib.util.spec_from_file_location(
-        "environment_check",
-        NB / "00_environment_check.py",
+    # Runs in a subprocess so the notebook's real `import preliz` never runs
+    # inside the pytest process. See the comment in _ENV_CONTRACT_SCRIPT for
+    # why pymc must not be imported in this script before app.run().
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _ENV_CONTRACT_SCRIPT,
+            str(NB / "00_environment_check.py"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    _, definitions = module.app.run()
-    model = definitions["env_check_model"]
-    gp = definitions["gp"]
-
-    assert model.coords == {"obs": tuple(range(20)), "feature": ("x",)}
-    assert model.named_vars_to_dims == {
-        "X": ("obs", "feature"),
-        "y_obs": ("obs",),
-        "y": ("obs",),
-    }
-    assert model.named_vars["X"].get_value().shape == (20, 1)
-    assert model.named_vars["y_obs"].get_value().shape == (20,)
-    assert model.named_vars["ell"].owner.op.name == "lognormal"
-    assert model.named_vars["eta"].owner.op.name == "halfnormal"
-    assert model.named_vars["sigma"].owner.op.name == "halfnormal"
-    matern = gp.cov_func._factor_list[0]
-    assert isinstance(matern, pm.gp.cov.Matern52)
-    assert matern.ls is model.named_vars["ell"]
-    assert model.compile_logp()(model.initial_point()).shape == ()
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "CONTRACT OK" in result.stdout
 
 
-def assert_foundations_artifact_contract(idata, free_rv_names: set[str]) -> None:
+def assert_foundations_artifact_contract(
+    idata, free_rv_names: set[str], observed_name: str
+) -> None:
     import arviz as az
 
     posterior = idata["posterior"]
@@ -116,26 +141,26 @@ def assert_foundations_artifact_contract(idata, free_rv_names: set[str]) -> None
     assert (diagnostics["ess_bulk"] >= 400).all()
     assert (diagnostics["ess_tail"] >= 400).all()
 
-    assert idata["observed_data"]["conc_obs"].dims == ("observation",)
-    assert idata["posterior_predictive"]["conc_obs"].dims == (
+    assert idata["observed_data"][observed_name].dims == ("observation",)
+    assert idata["posterior_predictive"][observed_name].dims == (
         "chain",
         "draw",
         "observation",
     )
 
 
+@pytest.mark.slow
 def test_01_foundations():
     run_notebook(NB / "01_foundations.py", timeout_s=900)
 
     import arviz as az
 
-    for filename, free_rv_names in (
-        ("01_warmup.nc", {"mu", "sigma"}),
-        ("01_piecewise.nc", {"peak", "rise", "decay", "tau", "sigma"}),
+    for filename, free_rv_names, observed_name in (
+        ("01_piecewise.nc", {"peak", "rise", "decay", "tau", "sigma"}, "conc_obs"),
+        ("01_spline.nc", {"weights", "sigma"}, "grade_obs"),
     ):
         idata = az.from_netcdf(NB.parent / "results" / filename)
-        assert_foundations_artifact_contract(idata, free_rv_names)
-
+        assert_foundations_artifact_contract(idata, free_rv_names, observed_name)
 
 
 def test_foundations_artifact_contract_rejects_nonfour_chain_datatree():
@@ -152,7 +177,8 @@ def test_foundations_artifact_contract_rejects_nonfour_chain_datatree():
     )
 
     with pytest.raises(AssertionError, match="chain"):
-        assert_foundations_artifact_contract(idata, {"mu"})
+        assert_foundations_artifact_contract(idata, {"mu"}, "conc_obs")
+
 
 def assert_marginal_latent_artifact_contract(
     idata, free_rv_names: set[str], observed_name: str, observed_dim: str
@@ -182,17 +208,22 @@ def assert_marginal_latent_artifact_contract(
     )
 
 
-def test_02_marginal_latent():
+@pytest.mark.slow
+def test_03_marginal_and_latent():
     run_notebook(
-        NB / "02_marginal_latent_gps.py",
-        timeout_s=180,
+        NB / "03_marginal_and_latent_gps.py",
+        timeout_s=1800,
         expected_stderr="Naive MAP optimization complete",
     )
     import arviz as az
 
     results_dir = NB.parent / "results"
-    structured = az.from_netcdf(results_dir / "02_marginal_gp.nc")
-    coal = az.from_netcdf(results_dir / "02_coal_latent_gp.nc")
+
+    # Full convergence contract: these two artifacts save a merged
+    # posterior_predictive group and are expected to meet the workshop
+    # 0-divergence standard.
+    structured = az.from_netcdf(results_dir / "03_theoph_marginal_gp.nc")
+    coal_exercise = az.from_netcdf(results_dir / "03_coal_exercise_gp.nc")
     assert_marginal_latent_artifact_contract(
         structured,
         {"intercept", "beta", "ell", "eta", "sigma"},
@@ -200,17 +231,55 @@ def test_02_marginal_latent():
         "observation",
     )
     assert_marginal_latent_artifact_contract(
-        coal,
-        {"alpha", "ell", "eta", "f_rotated_"},
+        coal_exercise,
+        {"ell", "eta", "f_rotated_"},
         "y",
         "year",
     )
 
+    # Lightweight existence/shape checks for the notebook's other saved
+    # fits: confirms every model this notebook now builds actually
+    # produced a four-chain posterior artifact, without re-asserting the
+    # full convergence contract (some of these fits don't merge a
+    # posterior_predictive group back in).
+    other_artifacts = {
+        "03_sim_marginal_gp.nc": {"ell", "eta", "sigma"},
+        "03_kopech_spin_marginal_gp.nc": {"ell", "eta", "sigma"},
+        "03_icm_multi_output_gp.nc": {"ell", "eta", "W", "kappa", "sigma"},
+        "03_spin_hierarchical_gp.nc": {
+            "alpha_pop",
+            "sigma_pitcher",
+            "pitcher_offset_raw",
+            "ell",
+            "eta_pop",
+            "f_pop_raw_rotated_",
+            "eta_dev",
+            "f_dev_raw_rotated_",
+            "sigma_obs",
+        },
+        "03_robust_studentt_gp.nc": {"ell", "eta", "f_rotated_", "sigma", "nu"},
+        "03_robust_gaussian_alt_gp.nc": {"ell", "eta", "sigma"},
+        "03_places_spatial_gp.nc": {
+            "alpha",
+            "beta_obesity",
+            "ell_axis",
+            "eta",
+            "sigma",
+        },
+    }
+    for filename, free_rv_names in other_artifacts.items():
+        idata = az.from_netcdf(results_dir / filename)
+        posterior = idata["posterior"]
+        assert free_rv_names <= set(posterior.data_vars), (filename, free_rv_names)
+        assert posterior.sizes["chain"] == 4, filename
 
-def test_03_kernels_hierarchy():
-    run_notebook(NB / "03_kernels_and_hierarchy.py", timeout_s=240)
+
+@pytest.mark.slow
+def test_02_gp_priors_and_kernels():
+    run_notebook(NB / "02_gp_priors_and_kernels.py", timeout_s=240)
 
 
+@pytest.mark.slow
 def test_04_scaling_workflow():
     run_notebook(NB / "04_scaling_and_workflow.py", timeout_s=900)
 

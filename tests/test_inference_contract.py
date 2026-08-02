@@ -66,9 +66,7 @@ def test_inference_health_uses_all_free_variables_and_diagnostics():
         }
     )
 
-    diagnostics, passed = inference_health(
-        idata, model, ess_floor=1, rhat_ceiling=1.1
-    )
+    diagnostics, passed = inference_health(idata, model, ess_floor=1, rhat_ceiling=1.1)
 
     assert set(diagnostics.index) == {"alpha", "beta"}
     assert passed is True
@@ -109,9 +107,7 @@ def test_prediction_sampling_uses_a_fresh_model_without_mutating_fit_model():
             ell = pm.HalfNormal("ell", sigma=1)
             eta = pm.HalfNormal("eta", sigma=1)
             sigma = pm.HalfNormal("sigma", sigma=1)
-            gp = pm.gp.Marginal(
-                cov_func=eta**2 * pm.gp.cov.Matern52(1, ls=ell)
-            )
+            gp = pm.gp.Marginal(cov_func=eta**2 * pm.gp.cov.Matern52(1, ls=ell))
             gp.marginal_likelihood(
                 "y", X=x_data, y=y_data, sigma=sigma, dims="observation"
             )
@@ -161,3 +157,7 @@ def test_fresh_prediction_sampling_receives_100_evenly_spaced_draws_per_chain():
     expected_draws = np.linspace(0, 256, num=100, dtype=int).tolist()
     assert received[0]["posterior"]["draw"].values.tolist() == expected_draws
     assert received[0]["posterior"].sizes == {"chain": 3, "draw": 100}
+
+
+
+

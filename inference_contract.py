@@ -1,6 +1,8 @@
 """Shared Bayesian inference helpers for the workshop notebooks."""
 
+
 import arviz as az
+import numpy as np
 import pymc as pm
 
 
@@ -17,8 +19,6 @@ def sample_fresh_model_predictions(
             predictions=True,
         )
 
-
-import numpy as np
 
 
 def eti(data, prob=0.89):
@@ -49,7 +49,9 @@ def posterior_subset(idata, draws_per_chain=100):
 def inference_health(idata, model, ess_floor=400, rhat_ceiling=1.01):
     """Summarize every free RV and report whether sampler diagnostics pass."""
     free_rv_names = [rv.name for rv in model.free_RVs]
-    diagnostics = az.summary(idata, var_names=free_rv_names, kind="diagnostics")
+    diagnostics = az.summary(
+        idata, var_names=free_rv_names, kind="diagnostics", round_to="none"
+    )
     divergences = int(idata["sample_stats"]["diverging"].sum().item())
     rhat = diagnostics["r_hat"].to_numpy(dtype=float)
     ess_bulk = diagnostics["ess_bulk"].to_numpy(dtype=float)
@@ -64,3 +66,5 @@ def inference_health(idata, model, ess_floor=400, rhat_ceiling=1.01):
     diagnostics.attrs["divergences"] = divergences
     diagnostics.attrs["passed"] = passed
     return diagnostics, passed
+
+
