@@ -7,6 +7,7 @@ version = "0.1.0"
 
 [tasks]
 check = "python -m pytest tests/ -v"
+test-fast = "python -m pytest tests/ -v -m 'not slow'"
 
 [dependencies]
 python = "3.13.*"
@@ -21,6 +22,8 @@ marimo = ">=0.17,<1"
 ipywidgets = "*"
 watchdog = "*"
 scikit-learn = "*"
+patsy = "*"
+preliz = "*"
 pytest = "*"
 requests = "*"
 pip = "*"

@@ -287,12 +287,14 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/narwhals-2.24.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/packaging-26.2-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/parso-0.8.7-pyhcf101f3_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/patsy-1.0.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pexpect-4.9.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pip-26.1.2-pyh145f28c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/platformdirs-4.10.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/plotly-6.9.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pluggy-1.6.0-pyhf9edf01_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/polars-1.42.1-pyh58ad624_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/preliz-0.27.1-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/prompt-toolkit-3.0.52-pyha770c72_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/ptyprocess-0.7.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pure_eval-0.2.3-pyhd8ed1ab_1.conda
@@ -302,6 +304,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pymdown-extensions-10.21.3-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pyparsing-3.3.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pysocks-1.7.1-pyha55dd90_7.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/pytensor-distributions-0.2.0-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-9.1.1-pyhc364b38_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-dateutil-2.9.0.post0-pyhe01879c_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-gil-3.13.14-h4df99d1_100.conda
@@ -398,12 +401,14 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/narwhals-2.24.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/packaging-26.2-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/parso-0.8.7-pyhcf101f3_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/patsy-1.0.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pexpect-4.9.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pip-26.1.2-pyh145f28c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/platformdirs-4.10.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/plotly-6.9.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pluggy-1.6.0-pyhf9edf01_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/polars-1.42.1-pyh58ad624_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/preliz-0.27.1-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/prompt-toolkit-3.0.52-pyha770c72_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/ptyprocess-0.7.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pure_eval-0.2.3-pyhd8ed1ab_1.conda
@@ -413,6 +418,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pymdown-extensions-10.21.3-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pyparsing-3.3.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pysocks-1.7.1-pyha55dd90_7.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/pytensor-distributions-0.2.0-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-9.1.1-pyhc364b38_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-dateutil-2.9.0.post0-pyhe01879c_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-gil-3.13.14-h4df99d1_100.conda
@@ -696,12 +702,14 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/narwhals-2.24.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/packaging-26.2-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/parso-0.8.7-pyhcf101f3_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/patsy-1.0.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pexpect-4.9.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pip-26.1.2-pyh145f28c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/platformdirs-4.10.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/plotly-6.9.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pluggy-1.6.0-pyhf9edf01_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/polars-1.42.1-pyh58ad624_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/preliz-0.27.1-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/prompt-toolkit-3.0.52-pyha770c72_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/ptyprocess-0.7.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pure_eval-0.2.3-pyhd8ed1ab_1.conda
@@ -711,6 +719,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pymdown-extensions-10.21.3-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pyparsing-3.3.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pysocks-1.7.1-pyha55dd90_7.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/pytensor-distributions-0.2.0-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-9.1.1-pyhc364b38_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-dateutil-2.9.0.post0-pyhe01879c_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-gil-3.13.14-h4df99d1_100.conda
@@ -991,11 +1000,13 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/narwhals-2.24.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/packaging-26.2-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/parso-0.8.7-pyhcf101f3_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/patsy-1.0.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pip-26.1.2-pyh145f28c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/platformdirs-4.10.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/plotly-6.9.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pluggy-1.6.0-pyhf9edf01_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/polars-1.42.1-pyh58ad624_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/preliz-0.27.1-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/prompt-toolkit-3.0.52-pyha770c72_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pure_eval-0.2.3-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pygments-2.20.0-pyhd8ed1ab_0.conda
@@ -1004,6 +1015,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/pymdown-extensions-10.21.3-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pyparsing-3.3.2-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pysocks-1.7.1-pyh09c184e_7.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/pytensor-distributions-0.2.0-pyhc364b38_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-9.1.1-pyhc364b38_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-dateutil-2.9.0.post0-pyhe01879c_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/python-gil-3.13.14-h4df99d1_100.conda
@@ -5527,6 +5539,17 @@ packages:
   run_exports: {}
   size: 82472
   timestamp: 1777722955579
+- conda: https://conda.anaconda.org/conda-forge/noarch/patsy-1.0.2-pyhcf101f3_0.conda
+  sha256: 9678f4745e6b82b36fab9657a19665081862268cb079cf9acf878ab2c4fadee9
+  md5: 8678577a52161cc4e1c93fcc18e8a646
+  depends:
+  - numpy >=1.4.0
+  - python >=3.10
+  - python
+  license: BSD-2-Clause AND PSF-2.0
+  run_exports: {}
+  size: 193450
+  timestamp: 1760998269054
 - conda: https://conda.anaconda.org/conda-forge/noarch/pexpect-4.9.0-pyhd8ed1ab_1.conda
   sha256: 202af1de83b585d36445dc1fda94266697341994d1a3328fabde4989e1b3d07a
   md5: d0d408b1f18883a944376da5cf8101ea
@@ -5609,6 +5632,22 @@ packages:
   run_exports: {}
   size: 542486
   timestamp: 1782814229638
+- conda: https://conda.anaconda.org/conda-forge/noarch/preliz-0.27.1-pyhd8ed1ab_0.conda
+  sha256: 8e0617e9fb681b26b4b3376a827c8a351e7e621da14d31489f918ec470bb68c4
+  md5: 79ccb8368a9216377c7a84bb4a0e9ccf
+  depends:
+  - arviz-stats >=1.1.0,<2.0.0
+  - matplotlib-base >=3.9
+  - numba >=0.62
+  - numpy >=2.0
+  - pytensor-distributions >=0.2.0,<0.3.0
+  - python >=3.12
+  - scipy >=1.12
+  license: Apache-2.0
+  license_family: APACHE
+  run_exports: {}
+  size: 445873
+  timestamp: 1783488501189
 - conda: https://conda.anaconda.org/conda-forge/noarch/prompt-toolkit-3.0.52-pyha770c72_0.conda
   sha256: 4817651a276016f3838957bfdf963386438c70761e9faec7749d411635979bae
   md5: edb16f14d920fb3faf17f5ce582942d6
@@ -5730,6 +5769,19 @@ packages:
   run_exports: {}
   size: 21085
   timestamp: 1733217331982
+- conda: https://conda.anaconda.org/conda-forge/noarch/pytensor-distributions-0.2.0-pyhc364b38_0.conda
+  sha256: 899217efe10ca33efeef0e5dbafeff3f0cb148b24317fb4c9ed87da9d144565c
+  md5: 764b5fb8391f4af3b8698545d733c271
+  depends:
+  - python >=3.12
+  - numpy >=2.0
+  - pytensor >=3.0.0,<4.0.0
+  - python
+  license: Apache-2.0
+  license_family: APACHE
+  run_exports: {}
+  size: 53062
+  timestamp: 1780977788250
 - conda: https://conda.anaconda.org/conda-forge/noarch/pytest-9.1.1-pyhc364b38_2.conda
   sha256: 430051d80765207a7d782b2b188230ba1489d35c6e75fd9903f76cb9fda4af16
   md5: 64c98a12c4e23eb238bf66bbecafdf3c
