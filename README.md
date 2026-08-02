@@ -2,8 +2,6 @@
 
 # Nonparametric Bayesian Modeling: An Introduction to Gaussian Processes with PyMC
 
-*JSM 2026 Continuing Education Course*
-
 **Christopher Fonnesbeck, Ph.D.**
 
 Principal Data Scientist, PyMC Labs  
@@ -20,7 +18,6 @@ working throughout in interactive [marimo](https://marimo.io/) notebooks.
 
 ## Course details
 
-| | |
 |---|---|
 | **Date** | Monday, August 3, 2026 |
 | **Time** | 8:30 AM–12:30 PM |
