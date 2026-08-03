@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.14"
+__generated_with = "0.23.16"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -31,8 +31,6 @@ with app.setup:
 
     RANDOM_SEED = 42
     data_dir = project_root / "data"
-    results_dir = project_root / "results"
-    results_dir.mkdir(exist_ok=True)
 
     def eti(data, prob=0.89):
         return data.quantile(
@@ -564,7 +562,6 @@ def _(sparse_model):
         sparse_start = perf_counter()
         sparse_idata = pm.sample(draws=500, tune=500, chains=4, random_seed=RANDOM_SEED)
         sparse_sample_seconds = perf_counter() - sparse_start
-    sparse_idata.to_netcdf(results_dir / "04_sparse_fitc_gp.nc")
     print(f"Sparse FITC-GP sampling wall-time: {sparse_sample_seconds:.1f}s")
     return (sparse_idata,)
 
@@ -1362,10 +1359,8 @@ def _(swing_model):
             random_seed=RANDOM_SEED,
         )
         swing_sample_seconds = perf_counter() - swing_start
-    swing_path = results_dir / "04_hsgp_swing_decision.nc"
-    swing_idata.to_netcdf(swing_path)
     print(f"HSGP swing-decision sampling wall-time: {swing_sample_seconds:.1f}s")
-    return swing_idata, swing_path
+    return (swing_idata,)
 
 
 @app.cell(hide_code=True)
@@ -1426,14 +1421,13 @@ def _(
 
 
 @app.cell
-def _(swing_idata, swing_model, swing_path):
+def _(swing_idata, swing_model):
     with swing_model:
         swing_ppc = pm.sample_posterior_predictive(
             posterior_subset(swing_idata), var_names=["y"], random_seed=RANDOM_SEED
         )
     swing_idata_with_ppc = swing_idata.copy()
     swing_idata_with_ppc["posterior_predictive"] = swing_ppc["posterior_predictive"]
-    swing_idata_with_ppc.to_netcdf(swing_path)
 
     swing_curve = swing_idata["posterior"]["intercept"] + swing_idata["posterior"]["f"]
     swing_curve_mean = swing_curve.mean(("chain", "draw")).values
@@ -1816,7 +1810,6 @@ def _(called_strike_model):
             random_seed=RANDOM_SEED,
         )
         strike_sample_seconds = perf_counter() - strike_start
-    strike_idata.to_netcdf(results_dir / "04_called_strike_hsgp.nc")
     print(f"Called-strike HSGP sampling wall-time: {strike_sample_seconds:.1f}s")
     return strike_idata, strike_sample_seconds
 

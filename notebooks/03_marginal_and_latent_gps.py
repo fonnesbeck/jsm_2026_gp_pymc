@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.14"
+__generated_with = "0.23.16"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -36,8 +36,6 @@ with app.setup:
     PYMC_DARK_GREEN = "#40611F"
 
     RANDOM_SEED = 42
-    results_dir = project_root / "results"
-    results_dir.mkdir(exist_ok=True)
 
     data_dir = project_root / "data"
 
@@ -70,24 +68,35 @@ def _():
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
-    ## Meet the marginal-GP API, on data with known truth
+    ## Marginal GP regression
 
-    Notebook 2 built a GP posterior by hand: write the joint Gaussian over
-    training and test points, condition on the training rows, done.
-    PyMC's `pm.gp` module wraps exactly that machinery, you supply a mean
-    function, a covariance function, and how the observations relate to
-    the latent function, and it assembles the linear algebra for you.
+    The simplest GP regression model assumes that observations are a smooth
+    latent function plus independent Gaussian noise:
 
-    Before trusting the API on real data, we check it against
-    **simulated** data: a single draw from a GP with known lengthscale
-    $\ell$, amplitude $\eta$, and noise scale $\sigma$. That gives the
-    posterior a very direct question to answer, does inference recover
-    the values used to generate the data?
+    $$
+    \begin{aligned}
+    f(x) &\sim \mathcal{GP}\bigl(m(x),\, k(x, x')\bigr), \\
+    y_i \mid f(x_i) &\sim \mathcal{N}\bigl(f(x_i),\, \sigma^2\bigr).
+    \end{aligned}
+    $$
+
+    This is the conjugate case. At the observed inputs, the latent function
+    and the observation noise are both Gaussian, so the function values can
+    be integrated out exactly. PyMC's `pm.gp.Marginal` performs that
+    marginalization: you specify the mean function, covariance function,
+    and noise model, and it constructs the resulting multivariate-normal
+    likelihood for the observations.
+
+    Notebook 2 derived the same Gaussian conditioning calculation by hand.
+    Here we use the API on **simulated** data: one draw from a GP with known
+    lengthscale $\ell$, amplitude $\eta$, and noise scale $\sigma$. That
+    lets us check whether the posterior recovers the values that generated
+    the data before applying the model to real observations.
     """)
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     def simulate_gp_data(seed, n=100, ell_true=1.0, eta_true=3.0, sigma_true=2.0):
         """Draw one exact GP realization plus Gaussian noise, with known truth."""
@@ -156,46 +165,31 @@ def _(sim_f_true, sim_x, sim_y):
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
-    ### The `.marginal_likelihood` method
+    ### What `.marginal_likelihood` builds
 
-    `pm.gp.Marginal` implements the conjugate case: observations are the
-    GP plus Gaussian noise,
+    Marginalizing the latent function gives the **marginal likelihood**:
 
-    $$
-    \begin{aligned}
-    f(x) &\sim \mathcal{GP}\big(0,\ k(x, x')\big) \\
-    y &= f(x) + \epsilon, \qquad \epsilon \sim \mathcal N(0, \sigma^2 I)
-    \end{aligned}
-    $$
+    $$p(\mathbf y \mid X) = \int p(\mathbf y \mid \mathbf f, X)\, p(\mathbf f \mid X)\, d\mathbf f,$$
 
-    Because both pieces are Gaussian, $f$ can be integrated out of the
-    joint analytically, the **marginal likelihood**:
+    or, equivalently,
 
-    $$p(y \mid X) = \int p(y \mid f, X)\, p(f \mid X)\, df$$
+    $$\mathbf y \mid X \sim \mathcal N\bigl(\mathbf m,\ K + \sigma^2 I\bigr).$$
 
-    $$\log p(y \mid X) = -\tfrac12\, y^\top (K + \sigma^2 I)^{-1} y - \tfrac12 \log\lvert K + \sigma^2 I \rvert - \tfrac{n}{2}\log 2\pi$$
+    `pm.gp.Marginal.marginal_likelihood(name, X, y, sigma)` creates this
+    multivariate-normal likelihood. The log density is
 
-    Those two terms pull against each other, which is why hyperparameters
-    can be estimated from this quantity at all.
-    $-\tfrac12\, y^\top (K + \sigma^2 I)^{-1} y$ is a **data-fit** term,
-    rewarding covariances that explain the observations.
-    $-\tfrac12 \log\lvert K + \sigma^2 I \rvert$ is a **complexity
-    penalty**, growing as the covariance admits a wider range of
-    functions. A very short lengthscale can fit almost anything and so
-    wins on the first term, but it inflates the determinant and loses on
-    the second. Sampling the marginal likelihood therefore trades fit
-    against flexibility on its own, with no held-out data and no
-    explicit regularization.
-    The class exposes three methods that mirror this structure directly:
-    `.marginal_likelihood(name, X, y, sigma)` builds the expression above
-    as the model's likelihood, taking either a scalar `sigma` for white
-    noise or a covariance function when the noise is itself correlated,
-    since conjugacy does not require the noise to be white.
-    `.conditional(name, Xnew)` builds the
-    posterior over the latent function at new inputs, and `.predict(Xnew,
-    point)` returns a closed-form mean and variance at a single
-    hyperparameter point instead of a full random variable. We use the
-    first two below; `.predict` reappears with the fastball-spin data.
+    $$\log p(\mathbf y \mid X) = -\tfrac12\, (\mathbf y - \mathbf m)^\top (K + \sigma^2 I)^{-1}(\mathbf y - \mathbf m) - \tfrac12 \log\lvert K + \sigma^2 I \rvert - \tfrac{n}{2}\log 2\pi.$$
+
+    The quadratic term rewards covariances that explain the observations;
+    the log determinant penalizes covariance structures flexible enough to
+    explain too many possible data sets. Their trade-off identifies the
+    covariance hyperparameters. A scalar `sigma` represents white noise,
+    while a covariance function can represent correlated Gaussian noise.
+
+    `.conditional(name, Xnew)` then constructs the posterior over the
+    latent function at new inputs. `.predict(Xnew, point)` instead returns
+    the closed-form mean and variance at one hyperparameter point. We use
+    the first two below; `.predict` returns with the fastball-spin data.
     """)
     return
 
@@ -246,7 +240,6 @@ def _(sim_model):
         sim_sample_start = perf_counter()
         sim_idata = pm.sample(chains=4, draws=500, tune=500, random_seed=RANDOM_SEED)
         sim_sample_seconds = perf_counter() - sim_sample_start
-    sim_idata.to_netcdf(results_dir / "03_sim_marginal_gp.nc")
     print(f"Simulated marginal-GP sampling wall-time: {sim_sample_seconds:.1f}s")
     return (sim_idata,)
 
@@ -512,14 +505,20 @@ def _():
     mo.md(r"""
     ### A naive first attempt
 
-    Let's fit the most straightforward possible GP: a zero-mean
-    `pm.gp.Marginal` with a `Matern52` covariance, evaluated directly on
-    the **standardized raw time** axis. `pm.gp.Marginal` marginalizes
-    the latent function analytically, so `.marginal_likelihood` gives us
-    an exact Gaussian likelihood in the hyperparameters ($\ell$, $\eta$,
-    $\sigma$), no MCMC over $f$ itself is needed. We optimize with
-    `pm.find_MAP` for a quick first look before committing to full
-    sampling.
+    Before building anything careful, it is worth writing the model you
+    would actually reach for first and seeing where it falls short. What
+    goes wrong here points straight at the two choices the rest of this
+    section rests on: the scale the inputs are measured on, and whether
+    the GP carries a mean function. Neither is obvious in advance, and
+    neither is visible until a simpler model has failed.
+
+    So: a zero-mean `pm.gp.Marginal` with a `Matern52` covariance,
+    evaluated directly on the **standardized raw time** axis.
+    `pm.gp.Marginal` marginalizes the latent function analytically, so
+    `.marginal_likelihood` gives us an exact Gaussian likelihood in the
+    hyperparameters ($\ell$, $\eta$, $\sigma$), no MCMC over $f$ itself
+    is needed. We optimize with `pm.find_MAP`, which is enough to expose
+    the problem without paying for a full fit.
     """)
     return
 
@@ -926,7 +925,6 @@ def _(gp_model):
             target_accept=0.9,
             init="adapt_diag",
         )
-    idata.to_netcdf(results_dir / "03_theoph_marginal_gp.nc")
     return (idata,)
 
 
@@ -940,7 +938,6 @@ def _(gp_model, idata):
         )
     idata_with_ppc = idata.copy()
     idata_with_ppc["posterior_predictive"] = observed_ppc["posterior_predictive"]
-    idata_with_ppc.to_netcdf(results_dir / "03_theoph_marginal_gp.nc")
     return (idata_with_ppc,)
 
 
@@ -983,16 +980,18 @@ def _(gp_model, idata):
         compact=True,
         figure_kwargs={"figsize": (7, 4)},
     )
+    trace_plot.viz["figure"].item()
+    return
+
+
+@app.cell(hide_code=True)
+def _(gp_model, idata):
     rank_plot = az.plot_rank(
         idata,
-        var_names=structured_free_rv_names,
+        var_names=sampled_rv_names(idata, gp_model),
         figure_kwargs={"figsize": (7, 4)},
     )
-    mo.hstack(
-        [trace_plot.viz["figure"].item(), rank_plot.viz["figure"].item()],
-        gap=1,
-        justify="center",
-    )
+    rank_plot.viz["figure"].item()
     return
 
 
@@ -1067,7 +1066,9 @@ def _(Xnew, gp_model, idata, structured_gp, time_grid):
     with gp_model:
         gp_model.add_coords({"prediction": time_grid})
         structured_gp.conditional("f_pred", Xnew, dims="prediction")
-        structured_gp.conditional("f_pred_noise", Xnew, pred_noise=True, dims="prediction")
+        structured_gp.conditional(
+            "f_pred_noise", Xnew, pred_noise=True, dims="prediction"
+        )
         structured_predictions = pm.sample_posterior_predictive(
             posterior_subset(idata),
             var_names=["f_pred", "f_pred_noise"],
@@ -1471,7 +1472,6 @@ def _(kopech_model):
             chains=4, draws=500, tune=500, target_accept=0.9, random_seed=RANDOM_SEED
         )
         kopech_sample_seconds = perf_counter() - kopech_sample_start
-    kopech_idata.to_netcdf(results_dir / "03_kopech_spin_marginal_gp.nc")
     print(f"Kopech spin-rate GP sampling wall-time: {kopech_sample_seconds:.1f}s")
     return kopech_idata, kopech_sample_seconds
 
@@ -1535,7 +1535,9 @@ def _(
 
     with kopech_model:
         kopech_model.add_coords({"prediction": kopech_day_grid})
-        kopech_gp.conditional("spin_pred", kopech_day_grid_z[:, None], dims="prediction")
+        kopech_gp.conditional(
+            "spin_pred", kopech_day_grid_z[:, None], dims="prediction"
+        )
         kopech_predictions = pm.sample_posterior_predictive(
             posterior_subset(kopech_idata),
             var_names=["spin_pred"],
@@ -1800,7 +1802,6 @@ def _(X_tide, tide_hours_std, y_tide):
         "feature": ["time"],
     }
 
-
     def build_tide_model():
         with pm.Model(coords=tide_coords) as tide_model:
             X_data = pm.Data("X", X_tide, dims=("observation", "feature"))
@@ -1826,7 +1827,6 @@ def _(X_tide, tide_hours_std, y_tide):
                 dims="observation",
             )
         return tide_model, gp_tide
-
 
     tide_model, gp_tide = build_tide_model()
     return gp_tide, tide_model
@@ -1923,7 +1923,6 @@ def _(tide_model):
         tide_start = perf_counter()
         tide_idata = pm.sample(draws=500, tune=500, chains=4, random_seed=RANDOM_SEED)
         tide_sample_seconds = perf_counter() - tide_start
-    tide_idata.to_netcdf(results_dir / "03_tide_exact_gp.nc")
     return tide_idata, tide_sample_seconds
 
 
@@ -2251,7 +2250,6 @@ def _(icm_model):
             chains=4, draws=500, tune=500, target_accept=0.9, random_seed=RANDOM_SEED
         )
         icm_sample_seconds = perf_counter() - icm_sample_start
-    icm_idata.to_netcdf(results_dir / "03_icm_multi_output_gp.nc")
     print(f"ICM multi-output GP sampling wall-time: {icm_sample_seconds:.1f}s")
     return icm_idata, icm_sample_seconds
 
@@ -2784,7 +2782,6 @@ def _(spin_model):
             random_seed=RANDOM_SEED,
         )
         spin_sample_seconds = perf_counter() - spin_start
-    spin_idata.to_netcdf(results_dir / "03_spin_hierarchical_gp.nc")
     print(f"Hierarchical spin-rate GP sampling wall-time: {spin_sample_seconds:.1f}s")
     return spin_idata, spin_sample_seconds
 
@@ -3259,7 +3256,6 @@ def _(robust_model):
             random_seed=RANDOM_SEED,
         )
         robust_sample_seconds = perf_counter() - robust_sample_start
-    robust_idata.to_netcdf(results_dir / "03_robust_studentt_gp.nc")
     print(f"Robust Student-t GP sampling wall-time: {robust_sample_seconds:.1f}s")
     return robust_idata, robust_sample_seconds
 
@@ -3780,10 +3776,10 @@ def _(X_places, y_places):
                 sigma=sigma,
                 dims="county",
             )
-        return places_model
+        return places_model, gp_places
 
-    places_model = build_places_model()
-    return build_places_model, places_model
+    places_model, gp_places = build_places_model()
+    return gp_places, places_model
 
 
 @app.cell(hide_code=True)
@@ -3889,7 +3885,6 @@ def _(places_model):
             random_seed=RANDOM_SEED,
         )
         places_sample_seconds = perf_counter() - places_start
-    places_idata.to_netcdf(results_dir / "03_places_spatial_gp.nc")
     print(f"PLACES ARD-GP sampling wall-time: {places_sample_seconds:.1f}s")
     return places_idata, places_sample_seconds
 
@@ -3966,9 +3961,8 @@ def _(places_idata):
 
 
 @app.cell
-def _(build_places_model, places_idata):
-    places_observed_model = build_places_model()
-    with places_observed_model:
+def _(places_idata, places_model):
+    with places_model:
         places_observed_ppc = pm.sample_posterior_predictive(
             posterior_subset(places_idata),
             var_names=["y"],
@@ -4123,8 +4117,6 @@ def _(
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
-    ## Where we are, and what's next
-
     Across this notebook's models you have now used both faces of GP
     inference repeatedly: `pm.gp.Marginal` whenever the likelihood is
     Gaussian (the simulated check, Theophylline, the single-pitcher and
@@ -4132,6 +4124,7 @@ def _():
     is not (the robust Student-t model, the coal-disasters exercise, and
     the hierarchical spin-rate model's population-plus-deviation
     structure).
+
     Two questions decide between them. Is the observation model Gaussian?
     If not, `Marginal` is unavailable. If it is, does the model need the
     function values themselves? `Marginal` integrates them away, so it can
@@ -4139,31 +4132,6 @@ def _():
     functions have to be combined before they reach the likelihood, as the
     hierarchical spin model's population curve and per-pitcher departures do,
     use `Latent` even under a Gaussian likelihood.
-
-    You have also seen the price both implementations pay. Every fit here
-    inverts (or Cholesky-factors) an $n \times n$ covariance matrix, an
-    $\mathcal{O}(n^3)$ operation, cheap at $n=11$ (Theophylline) or even
-    $n=100$ (PLACES), but the wall-clock times already showed its shape:
-    the 112-year coal series took several minutes to sample as a latent
-    Poisson GP, and the five-pitcher ICM model, a $251 \times 251$
-    covariance evaluated at every leapfrog step, took nearly six minutes.
-    This cubic cost is the hard constraint on exact GPs, `Marginal` and
-    `Latent` alike, and it does not improve by adding more compute per
-    step; the $n \times n$ matrix itself is the bottleneck.
-
-    $$
-    k^*(x^*) = k(x^*,x^*) - k(x^*,x)^\top
-    \underbrace{[k(x,x) + \sigma^2 I]^{-1}}_{\text{this is the problem}}
-    k(x^*,x)
-    $$
-
-    **Notebook 4** takes on that constraint directly: sparse approximations
-    (`gp.MarginalApprox`, where a small set of $m \ll n$ inducing points
-    stands in for the full training covariance) and the Hilbert-space GP
-    (`gp.HSGP`, a basis-function approximation with $\mathcal{O}(nm)$ cost
-    instead of $\mathcal{O}(n^3)$), plus the workflow question every
-    approximation raises: when is the bias it introduces worth the speed,
-    versus simply waiting for the exact fit?
     """)
     return
 

@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.14"
+__generated_with = "0.23.16"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -32,9 +32,6 @@ with app.setup:
     RANDOM_SEED = 42
 
     data_dir = project_root / "data"
-    results_dir = project_root / "results"
-    results_dir.mkdir(exist_ok=True)
-
 
     def z(a):
         """Standardize an array: (a - mean) / population std."""
@@ -696,7 +693,6 @@ def _(pw_model):
             chains=4,
             random_seed=RANDOM_SEED,
         )
-    pw_idata.to_netcdf(results_dir / "01_piecewise.nc")
     return (pw_idata,)
 
 
@@ -1051,7 +1047,6 @@ def _(pw_idata, pw_model):
             random_seed=RANDOM_SEED,
         )
     pw_idata["posterior_predictive"] = pw_ppc["posterior_predictive"]
-    pw_idata.to_netcdf(results_dir / "01_piecewise.nc")
     return (pw_ppc,)
 
 
@@ -1509,7 +1504,6 @@ def _(spline_model):
         )
         spline_seconds = perf_counter() - spline_start
 
-    spline_idata.to_netcdf(results_dir / "01_spline.nc")
     print(f"spline sampling wall-time: {spline_seconds:.1f}s")
     return (spline_idata,)
 
@@ -1759,7 +1753,6 @@ def _(spline_basis, spline_idata, spline_model, swing_ages):
             spline_idata, var_names=["grade_obs"], random_seed=RANDOM_SEED
         )
     spline_idata["posterior_predictive"] = spline_obs_ppc["posterior_predictive"]
-    spline_idata.to_netcdf(results_dir / "01_spline.nc")
     return
 
 
