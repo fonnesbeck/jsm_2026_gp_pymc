@@ -175,9 +175,23 @@ def _():
 
     $$\log p(y \mid X) = -\tfrac12\, y^\top (K + \sigma^2 I)^{-1} y - \tfrac12 \log\lvert K + \sigma^2 I \rvert - \tfrac{n}{2}\log 2\pi$$
 
+    Those two terms pull against each other, which is why hyperparameters
+    can be estimated from this quantity at all.
+    $-\tfrac12\, y^\top (K + \sigma^2 I)^{-1} y$ is a **data-fit** term,
+    rewarding covariances that explain the observations.
+    $-\tfrac12 \log\lvert K + \sigma^2 I \rvert$ is a **complexity
+    penalty**, growing as the covariance admits a wider range of
+    functions. A very short lengthscale can fit almost anything and so
+    wins on the first term, but it inflates the determinant and loses on
+    the second. Sampling the marginal likelihood therefore trades fit
+    against flexibility on its own, with no held-out data and no
+    explicit regularization.
     The class exposes three methods that mirror this structure directly:
     `.marginal_likelihood(name, X, y, sigma)` builds the expression above
-    as the model's likelihood, `.conditional(name, Xnew)` builds the
+    as the model's likelihood, taking either a scalar `sigma` for white
+    noise or a covariance function when the noise is itself correlated,
+    since conjugacy does not require the noise to be white.
+    `.conditional(name, Xnew)` builds the
     posterior over the latent function at new inputs, and `.predict(Xnew,
     point)` returns a closed-form mean and variance at a single
     hyperparameter point instead of a full random variable. We use the
@@ -216,6 +230,24 @@ def _(sim_X, sim_y):
     return build_sim_marginal_model, sim_model
 
 
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    `.marginal_likelihood` does not add a latent $\mathbf f$ to the model.
+    Print the model and you get one multivariate normal node over the
+    observations, with $K + \sigma^2 I$ as its covariance, alongside the
+    three hyperparameters. That is the marginalization above, made
+    concrete.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(sim_model):
+    sim_model
+    return
+
+
 @app.cell
 def _(sim_model):
     sim_model.compile_logp()(sim_model.initial_point())
@@ -225,7 +257,7 @@ def _(sim_model):
         sim_sample_seconds = perf_counter() - sim_sample_start
     sim_idata.to_netcdf(results_dir / "03_sim_marginal_gp.nc")
     print(f"Simulated marginal-GP sampling wall-time: {sim_sample_seconds:.1f}s")
-    return sim_idata, sim_sample_seconds
+    return (sim_idata,)
 
 
 @app.cell(hide_code=True)
@@ -235,21 +267,11 @@ def _(sim_idata, sim_model):
     sim_n_draws_total = (
         sim_idata["posterior"].sizes["chain"] * sim_idata["posterior"].sizes["draw"]
     )
-    sim_min_ess_bulk = float(sim_summary["ess_bulk"].min())
-    sim_min_ess_tail = float(sim_summary["ess_tail"].min())
-    sim_max_rhat = float(sim_summary["r_hat"].astype(float).max())
     print(
         f"Divergences: {sim_n_div} / {sim_n_draws_total}; health passed: {sim_health_passed}"
     )
     sim_summary.round(4)
-    return (
-        sim_health_passed,
-        sim_max_rhat,
-        sim_min_ess_bulk,
-        sim_min_ess_tail,
-        sim_n_div,
-        sim_n_draws_total,
-    )
+    return
 
 
 @app.cell
@@ -297,28 +319,17 @@ def _(
     sim_ell_true,
     sim_eta_mean,
     sim_eta_true,
-    sim_health_passed,
-    sim_max_rhat,
-    sim_min_ess_bulk,
-    sim_min_ess_tail,
-    sim_n_div,
-    sim_n_draws_total,
     sim_recovered,
-    sim_sample_seconds,
     sim_sigma_mean,
     sim_sigma_true,
 ):
     mo.md(f"""
-    **Diagnostics:** {sim_n_div} divergence(s) out of {sim_n_draws_total} draws
-    in {sim_sample_seconds:.1f}s. Minimum `ess_bulk` is {sim_min_ess_bulk:.0f},
-    minimum `ess_tail` is {sim_min_ess_tail:.0f}, and maximum `r_hat` is
-    {sim_max_rhat:.3f}; health status **{sim_health_passed}**.
-
-    **Recovery check:** posterior means ({sim_ell_mean}, {sim_eta_mean},
+    Posterior means ({sim_ell_mean}, {sim_eta_mean},
     {sim_sigma_mean}) for (ell, eta, sigma) sit close to the simulating
     values ({sim_ell_true}, {sim_eta_true}, {sim_sigma_true}), and the 89% ETI
-    for every parameter contains its true value: {sim_recovered}. **Inference
-    recovers the generating hyperparameters.** This is the check to repeat
+    for every parameter contains its true value: {sim_recovered}. 
+
+    This is the check to repeat
     mentally on real data, where the truth is unknown and only the diagnostics
     and predictive checks are available.
     """)
@@ -960,19 +971,9 @@ def _(gp_model, idata):
     summary, health_passed = inference_health(idata, gp_model)
     n_div = summary.attrs["divergences"]
     n_draws_total = idata["posterior"].sizes["chain"] * idata["posterior"].sizes["draw"]
-    min_ess_bulk = float(summary["ess_bulk"].min())
-    min_ess_tail = float(summary["ess_tail"].min())
-    max_rhat = float(summary["r_hat"].astype(float).max())
     print(f"Divergences: {n_div} / {n_draws_total}; health passed: {health_passed}")
     summary.round(4)
-    return (
-        health_passed,
-        max_rhat,
-        min_ess_bulk,
-        min_ess_tail,
-        n_div,
-        n_draws_total,
-    )
+    return
 
 
 @app.cell
@@ -984,24 +985,9 @@ def _(gp_model, idata):
 
 
 @app.cell(hide_code=True)
-def _(
-    health_passed,
-    map_estimate,
-    max_rhat,
-    min_ess_bulk,
-    min_ess_tail,
-    n_div,
-    n_draws_total,
-    posterior_summary,
-):
+def _(map_estimate, posterior_summary):
     mo.md(f"""
-    **Diagnostics:** {n_div} divergence(s) out of {n_draws_total} draws.
-    Minimum `ess_bulk` is {min_ess_bulk:.0f}, minimum `ess_tail` is
-    {min_ess_tail:.0f}, and maximum `r_hat` is {max_rhat:.3f}; the computed
-    all-free-variable health status is **{health_passed}**. Interpret the
-    posterior only if that status is true.
-
-    **MAP vs. posterior mean** (lengthscale $\\ell$): MAP gives
+    MAP gives
     {map_estimate["ell"]:.3f}; the full posterior mean is
     {float(posterior_summary.loc["ell", "mean"]):.3f}. MAP and its predictive curve
     are plug-in summaries: they condition on one hyperparameter point rather
