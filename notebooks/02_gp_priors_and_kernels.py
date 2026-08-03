@@ -14,14 +14,8 @@ with app.setup(hide_code=True):
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    from inference_contract import (
-        eti_bounds,
-        inference_health,
-        posterior_subset,
-        sample_fresh_model_predictions,
-    )
+    from inference_contract import eti_bounds
     from exercises import exercise
-    from time import perf_counter
 
     import numpy as np
     import plotly.graph_objects as go
@@ -37,8 +31,6 @@ with app.setup(hide_code=True):
     PYMC_DARK_GREEN = "#40611F"
 
     RANDOM_SEED = 42
-    results_dir = project_root / "results"
-    results_dir.mkdir(exist_ok=True)
 
     data_dir = project_root / "data"
 
@@ -558,275 +550,9 @@ def _():
     wiggle on a similar horizontal scale (set by $\ell$), yet no two are
     alike. This cloud of curves is the GP's prior belief: "the function
     is some smooth wiggle of about this amplitude and this lengthscale,
-    but I don't yet know which one." Data will narrow the cloud.
-
-    ### GP regression *is* conditioning
-
-    Here is the payoff. GP regression is nothing more than the MVN
-    **conditioning** you did by hand earlier, applied to function values.
-    Stack the (noisy) observed outputs $\mathbf y$ at training inputs $X$
-    together with the unknown function values $\mathbf f_*$ at test inputs
-    $X_*$; under the GP prior they are *jointly* MVN. Conditioning
-    $\mathbf f_*$ on $\mathbf y$ gives the posterior
-
-    $$\mathbf f_* \mid \mathbf y \sim \mathcal N\big(
-    K_{*}(K + \sigma^2 I)^{-1}\mathbf y,\ \
-    K_{**} - K_{*}(K + \sigma^2 I)^{-1}K_{*}^{\top}\big),$$
-
-    where $K = k(X,X)$, $K_* = k(X_*,X)$, $K_{**} = k(X_*,X_*)$, and
-    $\sigma^2$ is observation-noise variance added to the training block.
-    This is *exactly* the conditioning formula from the bivariate example
-       , same shape, just with matrices. Let's do it by hand on the
-    theophylline subject that defeated notebook 1's piecewise model,
-    plugging in sensible hyperparameters (real inference over
-    $\ell,\eta,\sigma$ on this same subject is notebook 3's job).
-
-    One choice deserves stating before we make it. The ExpQuad kernel is
-    **stationary**: a single $\ell$ sets the wiggle rate everywhere on the
-    input axis. Theophylline does not oblige, it rises within an hour and
-    then decays for a day, and it is sampled that way too, six points
-    before the fourth hour and then a twelve-hour gap. Ask one lengthscale
-    to serve both regimes on raw time and it must pick a side: long enough
-    to bridge the gap and it flattens the absorption limb, short enough to
-    catch the limb and it forgets everything mid-gap and snaps back to the
-    prior mean. Conditioning on **log-time** puts the fast and slow parts
-    of the curve on comparable footing, so one lengthscale suffices. This
-    is the same input transform notebook 3 uses, and it is worth
-    remembering that the kernel's assumptions are claims about the axis you
-    feed it, not just about the function.
+    but I don't yet know which one." Data will narrow the cloud, and the
+    last section of this notebook shows how.
     """)
-    return
-
-
-@app.cell(hide_code=True)
-def _():
-    theoph = pl.read_csv(data_dir / "theophylline.csv")
-    theoph.head()
-    return (theoph,)
-
-
-@app.cell(hide_code=True)
-def _(theoph):
-    # One subject, sorted by time, reused for the GP conditioning example below.
-    subject_id = 1
-    subject_df = theoph.filter(pl.col("subject") == subject_id).sort("time")
-
-    time_vals = subject_df["time"].to_numpy()
-    conc_vals = subject_df["conc"].to_numpy()
-
-    conc_mean, conc_std = conc_vals.mean(), conc_vals.std(ddof=0)
-
-    conc_z = z(conc_vals)
-    return conc_mean, conc_std, conc_vals, conc_z, time_vals
-
-
-@app.cell(hide_code=True)
-def _(time_vals):
-    time_grid = np.linspace(time_vals.min(), time_vals.max(), 200)
-    return (time_grid,)
-
-
-@app.cell(hide_code=True)
-def _():
-    mo.md(r"""
-    We can now do this on the theophylline subject from notebook 1, with
-    no MCMC and no PyMC model: just the conditioning formula applied to
-    kernel matrices. Nothing is being *fitted* here. The formula needs
-    $\ell$, $\eta$ and $\sigma$ before it can be evaluated, and we simply
-    choose them:
-
-    - $\ell = 0.6$ on an input axis about 3.2 units wide, so the curve
-      can bend a handful of times across the day but not between adjacent
-      observations;
-    - $\eta = 1.0$, matching the standardized concentrations, whose
-      standard deviation is 1 by construction;
-    - $\sigma = 0.25$, saying assay noise accounts for about a quarter of
-      the variation.
-
-    The input axis is standardized log-time rather than raw time, for the
-    reason just given.
-    """)
-    return
-
-
-@app.cell
-def _(conc_mean, conc_std, conc_z, time_grid, time_vals):
-    cond_ls, cond_eta, cond_noise = 0.6, 1.0, 0.25
-    cond_log_time = np.log1p(time_vals)
-    cond_log_time_mean, cond_log_time_std = cond_log_time.mean(), cond_log_time.std(ddof=0)
-    Xtr = (cond_log_time - cond_log_time_mean) / cond_log_time_std
-    ytr = conc_z
-    Xstar = (np.log1p(time_grid) - cond_log_time_mean) / cond_log_time_std
-
-    cond_cov = cond_eta**2 * pm.gp.cov.ExpQuad(1, cond_ls)
-    K_tr = cond_cov(Xtr[:, None]).eval() + cond_noise**2 * np.eye(len(Xtr))
-    K_s = cond_cov(Xstar[:, None], Xtr[:, None]).eval()
-    K_ss = cond_cov(Xstar[:, None]).eval()
-
-    cond_solve = np.linalg.solve(K_tr, ytr)
-    post_mean_z = K_s @ cond_solve
-    post_cov = K_ss - K_s @ np.linalg.solve(K_tr, K_s.T)
-    posterior_draws_z = np.random.default_rng(RANDOM_SEED).multivariate_normal(
-        post_mean_z, post_cov + 1e-8 * np.eye(len(post_mean_z)), size=2_000
-    )
-    posterior_draws = xr.DataArray(
-        posterior_draws_z[None, :, :],
-        dims=("chain", "draw", "time_grid"),
-        coords={"chain": [0], "draw": np.arange(len(posterior_draws_z)), "time_grid": time_grid},
-    )
-    gp_post_mean = post_mean_z * conc_std + conc_mean
-    gp_post_lo, gp_post_hi = (
-        endpoint.values for endpoint in eti_bounds(posterior_draws * conc_std + conc_mean)
-    )
-    return gp_post_hi, gp_post_lo, gp_post_mean
-
-
-@app.cell(hide_code=True)
-def _(conc_vals, gp_post_hi, gp_post_lo, gp_post_mean, time_grid, time_vals):
-    gp_reg_fig = go.Figure()
-    gp_reg_fig.add_trace(
-        go.Scatter(
-            x=np.concatenate([time_grid, time_grid[::-1]]),
-            y=np.concatenate([gp_post_hi, gp_post_lo[::-1]]),
-            fill="toself",
-            fillcolor="rgba(21,74,114,0.25)",
-            line=dict(color="rgba(255,255,255,0)"),
-            name="89% ETI",
-        )
-    )
-    gp_reg_fig.add_trace(
-        go.Scatter(
-            x=time_grid,
-            y=gp_post_mean,
-            mode="lines",
-            name="GP posterior mean",
-            line=dict(color=PYMC_GREEN, width=3),
-        )
-    )
-    gp_reg_fig.add_trace(
-        go.Scatter(
-            x=time_vals,
-            y=conc_vals,
-            mode="markers",
-            name="observed",
-            marker=dict(color=PYMC_BLUE, size=9),
-        )
-    )
-    gp_reg_fig.update_layout(
-        title="GP conditioned on subject 1 — the smooth curve the piecewise model couldn't be",
-        xaxis_title="Time since dose (hours)",
-        yaxis_title="Concentration (mg/L)",
-        template="plotly_white",
-    )
-    gp_reg_fig
-    return
-
-
-@app.cell(hide_code=True)
-def _():
-    mo.vstack(
-        [
-            mo.md(
-                r"""
-                **Condition on an added point.** Imagine
-                appending one extra, very precise observation at the peak (say,
-                1.5 hours). Using the conditioning formula
-                $\mathbf f_*\mid\mathbf y \sim \mathcal N(K_*(K+\sigma^2
-                I)^{-1}\mathbf y,\ K_{**}-K_*(K+\sigma^2 I)^{-1}K_*^\top)$,
-                predict the local posterior mean and variance changes before
-                checking the discussion.
-                """),
-            mo.accordion(
-                {
-                    "Discussion": mo.md(
-                        r"""
-                        The added row and column make $K_*$ large for prediction
-                        points near 1.5 hours. The posterior mean is pulled
-                        toward the new observation, while the subtracted
-                        covariance term grows locally, so posterior variance
-                        shrinks. A smaller measurement-noise $\sigma$ produces
-                        more shrinkage. Beyond roughly a lengthscale from the
-                        added point, correlation is weak and the conditional
-                        distribution changes little. This is the same local
-                        information update seen in the bivariate-normal
-                        conditioning example.
-                        """
-                    )
-                }
-            ),
-        ]
-    )
-    return
-
-
-@app.cell(hide_code=True)
-def _():
-    mo.md(r"""
-    Compare this directly with the piecewise-linear fit from notebook 1. The
-    GP posterior mean glides **smoothly** through the rise, rounds the
-    peak without any corner, and eases down the decay, no knot to place,
-    no $\tau$ to argue over. The shaded 89% ETI is
-    narrow where data are dense (the early rise) and widens where data are
-    sparse (the long tail and beyond the last point), which is precisely
-    uncertainty behavior we wanted and the piecewise model could not
-    provide. We obtained all of it by conditioning a Gaussian, the same
-    operation as the two-scalar example, scaled up to a whole function.
-    **This is the flexible function the piecewise-linear model could not
-    be.**
-
-    So why sample anything, if a closed-form solution produces this?
-    Because the band answers a narrower question than it appears to. It
-    is $p(\mathbf f_* \mid \mathbf y)$ *for the three numbers we picked*,
-    and we picked them by eye. Set $\ell$ to 0.3 instead and you get a
-    different curve with an equally confident band, and nothing in the
-    formula tells you which one to believe. An honest answer has to
-    average over the hyperparameter values the data actually support, and
-    that posterior has no closed form. Sampling is how we get it.
-
-    The closed form also depends on the likelihood being Gaussian. Counts
-    or binary outcomes break it outright, and then even the function
-    values need sampling.
-
-    Notebook 3 does both: priors on $\ell$, $\eta$ and $\sigma$ with
-    `pm.gp.Marginal` for the Gaussian case, and `pm.gp.Latent` when the
-    likelihood is not.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _():
-    mo.vstack(
-        [
-            mo.md(
-                r"""
-                **Smoothness and prior implications.** In the
-                hand-built GP regression above we set `cond_ls = 0.6` on the
-                *standardized log-time* axis. Before changing it to 0.3, predict
-                how the prior functions, the fit near the sparse tail, and the
-                89% conditional interval should change.
-                """),
-            mo.accordion(
-                {
-                    "Discussion": mo.md(
-                        r"""
-                        Halving the lengthscale makes prior functions wigglier:
-                        correlation now decays over a shorter distance. The
-                        conditional mean can bend more between observations,
-                        potentially chasing the densely sampled early rise. In
-                        the sparse tail, prediction points lose correlation
-                        with training points sooner, so the mean returns to the
-                        zero prior mean faster and the 89% conditional interval
-                        expands earlier. A longer lengthscale carries structure
-                        farther but can oversmooth the rise. This prior
-                        implication is why notebook 3 infers `ell` rather than
-                        treating one hand-set value as established.
-                        """
-                    )
-                }
-            ),
-        ]
-    )
     return
 
 
@@ -1714,19 +1440,10 @@ def _(tides_slice):
     tide_level = tides_slice["water_level"].to_numpy()
 
     tide_hours_std = tide_hours.std(ddof=0)
-    tide_level_mean, tide_level_std = tide_level.mean(), tide_level.std(ddof=0)
 
     X_tide = z(tide_hours).reshape(-1, 1)  # GP inputs are 2D: (n, 1)
     y_tide = z(tide_level)
-    return (
-        X_tide,
-        tide_hours,
-        tide_hours_std,
-        tide_level,
-        tide_level_mean,
-        tide_level_std,
-        y_tide,
-    )
+    return X_tide, tide_hours, tide_hours_std, tide_level, y_tide
 
 
 @app.cell(hide_code=True)
@@ -1772,140 +1489,79 @@ def _():
       quasi-periodic kernel), or how an ARD kernel over multiple input
       dimensions is built.
 
-    Below we compose an **additive** kernel: a long-lengthscale
-    `Matern52` trend plus two `Periodic` components, one for each known
-    physical period. Each `Periodic` component's period and
-    within-cycle lengthscale are **fixed** at physically-motivated
-    constants (12.42h semidiurnal / 23.93h diurnal periods, these are
-    astronomical constants, not free parameters, and a moderate
-    within-cycle lengthscale that gives each cycle a smooth, roughly
-    sinusoidal shape rather than a sharp spike). Freeing both the period
-    *and* the within-cycle lengthscale of two near-commensurate cycles
-    (23.93h is 1.93 times 12.42h, close enough to a 2:1 ratio that the
-    two components can partly stand in for one another, but not close
-    enough for one to replace the other) creates a hard-to-sample, highly
-    correlated posterior; fixing the shape parameters and
-    leaving only the trend lengthscale and each component's amplitude
-    free keeps the search well-behaved while still letting the data
-    determine how strong each tidal component is.
+    Tides call for the additive form. Below we build a long-lengthscale
+        `Matern52` trend plus two `Periodic` components, one per known
+        physical cycle. The two periods are not free parameters: 12.42h and
+        23.93h are astronomical constants, so we fix them, and we fix each
+        component's within-cycle lengthscale too, at a value that gives a
+        smooth roughly sinusoidal cycle rather than a sharp spike.
     """)
     return
 
 
 @app.cell
-def _(X_tide, tide_hours_std, y_tide):
+def _(X_tide, tide_hours_std):
     tide_semi_period_std = 12.42 / tide_hours_std
     tide_diurnal_period_std = 23.93 / tide_hours_std
-    tide_coords = {
-        "observation": np.arange(len(y_tide)),
-        "feature": ["time"],
-    }
 
-    def build_tide_model(X_pred=None):
-        coords = dict(tide_coords)
-        if X_pred is not None:
-            coords["prediction"] = np.arange(len(X_pred))
-        with pm.Model(coords=coords) as tide_model:
-            X_data = pm.Data("X", X_tide, dims=("observation", "feature"))
-            tide_level_data = pm.Data("tide_level", y_tide, dims="observation")
-            ell_trend = pm.LogNormal("ell_trend", mu=0, sigma=1)
-            eta_trend = pm.HalfNormal("eta_trend", sigma=1)
-            cov_trend = eta_trend**2 * pm.gp.cov.Matern52(1, ls=ell_trend)
-            eta_semi = pm.HalfNormal("eta_semi", sigma=1)
-            cov_semi = eta_semi**2 * pm.gp.cov.Periodic(
-                1, period=tide_semi_period_std, ls=0.5
-            )
-            eta_diurnal = pm.HalfNormal("eta_diurnal", sigma=0.5)
-            cov_diurnal = eta_diurnal**2 * pm.gp.cov.Periodic(
-                1, period=tide_diurnal_period_std, ls=0.5
-            )
-            sigma_tide = pm.HalfNormal("sigma_tide", sigma=0.5)
-            gp_tide = pm.gp.Marginal(cov_func=cov_trend + cov_semi + cov_diurnal)
-            gp_tide.marginal_likelihood(
-                "y",
-                X=X_data,
-                y=tide_level_data,
-                sigma=sigma_tide,
-                dims="observation",
-            )
-            if X_pred is not None:
-                X_pred_data = pm.Data("X_pred", X_pred, dims=("prediction", "feature"))
-                gp_tide.conditional("f_tide_pred", X_pred_data, dims="prediction")
-        return tide_model
-
-    tide_model = build_tide_model()
-    return build_tide_model, tide_model
-
-
-@app.cell(hide_code=True)
-def _():
-    mo.md(r"""
-    ### Prior predictive check
-    """)
-    return
-
-
-@app.cell
-def _(tide_model):
-    with tide_model:
-        tide_prior_pred = pm.sample_prior_predictive(draws=500, random_seed=RANDOM_SEED)
-    return (tide_prior_pred,)
-
-
-@app.cell(hide_code=True)
-def _(tide_prior_pred):
-    tide_prior_draws = (
-        tide_prior_pred["prior_predictive"]["y"]
-        .stack(sample=("chain", "draw"))
-        .transpose("sample", "observation")
+    tide_cov = (
+        0.5**2 * pm.gp.cov.Matern52(1, ls=1.0)
+        + 1.0**2 * pm.gp.cov.Periodic(1, period=tide_semi_period_std, ls=0.5)
+        + 0.5**2 * pm.gp.cov.Periodic(1, period=tide_diurnal_period_std, ls=0.5)
     )
-    return (tide_prior_draws,)
+    tide_prior_K = tide_cov(X_tide).eval() + 1e-8 * np.eye(len(X_tide))
+    return (tide_prior_K,)
 
 
 @app.cell(hide_code=True)
-def _(X_tide, tide_prior_draws, y_tide):
+def _(X_tide, tide_hours, tide_prior_K, y_tide):
     tide_prior_fig = go.Figure()
-    rng_plot_tide = np.random.default_rng(0)
-    for _i in rng_plot_tide.choice(
-        tide_prior_draws.sizes["sample"], size=50, replace=False
-    ):
+    _tide_draws = np.random.default_rng(RANDOM_SEED).multivariate_normal(
+        np.zeros(len(X_tide)), tide_prior_K, size=3
+    )
+    for _i in range(_tide_draws.shape[0]):
         tide_prior_fig.add_trace(
             go.Scatter(
-                x=X_tide[:, 0],
-                y=tide_prior_draws.isel(sample=_i).values,
+                x=tide_hours,
+                y=_tide_draws[_i],
                 mode="lines",
-                line=dict(color=PYMC_LIGHT_BLUE, width=1),
-                opacity=0.2,
-                showlegend=False,
+                line=dict(width=2),
+                name=f"prior draw {_i + 1}",
             )
         )
     tide_prior_fig.add_trace(
         go.Scatter(
-            x=X_tide[:, 0],
+            x=tide_hours,
             y=y_tide,
-            mode="markers",
-            marker=dict(color="black", size=4),
+            mode="lines",
+            line=dict(color="black", width=2, dash="dot"),
             name="observed (standardized)",
         )
     )
     tide_prior_fig.update_layout(
-        title="Noisy prior-predictive tide observations vs. data",
-        xaxis_title="time (standardized)",
-        yaxis_title="water level (standardized)",
+        title="Draws from the composed kernel, before seeing any data",
+        xaxis_title="Hours since slice start",
+        yaxis_title="Water level (standardized)",
         template="plotly_white",
+        legend=dict(orientation="h", y=1.02, yanchor="bottom"),
     )
     tide_prior_fig
     return
 
 
 @app.cell(hide_code=True)
-def _(tide_prior_draws, y_tide):
-    mo.md(f"""
-    **Plausibility check:** prior predictive draws span
-    [{tide_prior_draws.min():.2f}, {tide_prior_draws.max():.2f}] on the
-    standardized scale, comfortably bracketing the observed range
-    [{y_tide.min():.2f}, {y_tide.max():.2f}], broad but not absurd,
-    reasonable to proceed to sampling.
+def _():
+    mo.md(r"""
+    No data went into those curves. They come from the covariance function
+    alone, and they already show the thing that makes this a mixed
+    semidiurnal station: two high tides a day of unequal height, drifting
+    slowly up and down. Composition is what bought that. A single kernel
+    cannot produce it.
+
+    The amplitudes above were set by hand to make the point. Which
+    component actually dominates, and by how much, is a question for the
+    data, and answering it means fitting the model. Notebook 3 does that
+    with `pm.gp.Marginal`, using this same composed kernel.
     """)
     return
 
@@ -1913,182 +1569,6 @@ def _(tide_prior_draws, y_tide):
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
-    ### Sampling
-
-    5 free hyperparameters (trend $\ell,\eta$; two periodic amplitudes
-    $\eta$; noise $\sigma$, periods and within-cycle shape are fixed,
-    as discussed above) over 200 points.
-    """)
-    return
-
-
-@app.cell
-def _(tide_model):
-    tide_model.compile_logp()(tide_model.initial_point())
-    with tide_model:
-        tide_start = perf_counter()
-        tide_idata = pm.sample(draws=500, tune=500, chains=4, random_seed=RANDOM_SEED)
-        tide_sample_seconds = perf_counter() - tide_start
-    tide_idata.to_netcdf(results_dir / "02_tide_exact_gp.nc")
-    print(f"NOAA additive-GP sampling wall-time: {tide_sample_seconds:.1f}s")
-    return tide_idata, tide_sample_seconds
-
-
-@app.cell(hide_code=True)
-def _(tide_idata, tide_model):
-    tide_summary, tide_health_passed = inference_health(tide_idata, tide_model)
-    tide_n_div = tide_summary.attrs["divergences"]
-    tide_n_draws_total = (
-        tide_idata["posterior"].sizes["chain"] * tide_idata["posterior"].sizes["draw"]
-    )
-    tide_min_ess_bulk = float(tide_summary["ess_bulk"].min())
-    tide_min_ess_tail = float(tide_summary["ess_tail"].min())
-    tide_max_rhat = float(tide_summary["r_hat"].astype(float).max())
-    tide_summary.round(4)
-    return (
-        tide_health_passed,
-        tide_max_rhat,
-        tide_min_ess_bulk,
-        tide_min_ess_tail,
-        tide_n_div,
-        tide_n_draws_total,
-    )
-
-
-@app.cell(hide_code=True)
-def _(
-    tide_health_passed,
-    tide_max_rhat,
-    tide_min_ess_bulk,
-    tide_min_ess_tail,
-    tide_n_div,
-    tide_n_draws_total,
-    tide_sample_seconds,
-):
-    mo.md(f"""
-    **Diagnostics:** {tide_n_div} divergence(s) out of
-    {tide_n_draws_total} draws in {tide_sample_seconds:.1f}s. Minimum
-    `ess_bulk` is {tide_min_ess_bulk:.0f} and minimum `ess_tail` is
-    {tide_min_ess_tail:.0f}, both above the 400 threshold, and
-    maximum `r_hat` is {tide_max_rhat:.3f}. Health gate passed:
-    **{tide_health_passed}**.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(X_tide, build_tide_model, tide_idata):
-    tide_ppc = sample_fresh_model_predictions(
-        tide_idata,
-        lambda: build_tide_model(X_tide),
-        var_names=["f_tide_pred"],
-        random_seed=RANDOM_SEED,
-    )
-    return (tide_ppc,)
-
-
-@app.cell
-def _(build_tide_model, tide_idata):
-    tide_observed_model = build_tide_model()
-    with tide_observed_model:
-        tide_observed_ppc = pm.sample_posterior_predictive(
-            posterior_subset(tide_idata),
-            var_names=["y"],
-            random_seed=RANDOM_SEED,
-        )
-    return (tide_observed_ppc,)
-
-
-@app.cell(hide_code=True)
-def _(tide_observed_ppc, y_tide):
-    tide_replicated = tide_observed_ppc["posterior_predictive"]["y"]
-    tide_ppc_location = tide_replicated.mean(dim="observation")
-    tide_ppc_spread = tide_replicated.std(dim="observation")
-    tide_observed_location = float(y_tide.mean())
-    tide_observed_spread = float(y_tide.std(ddof=0))
-    {
-        "observed_mean": tide_observed_location,
-        "predictive_mean_eti": tide_ppc_location.quantile(
-            [0.055, 0.945], dim=("chain", "draw")
-        ),
-        "observed_sd": tide_observed_spread,
-        "predictive_sd_eti": tide_ppc_spread.quantile(
-            [0.055, 0.945], dim=("chain", "draw")
-        ),
-    }
-    return
-
-
-@app.cell(hide_code=True)
-def _(tide_hours, tide_level_mean, tide_level_std, tide_ppc):
-    tide_fit = tide_ppc["predictions"]["f_tide_pred"]
-    tide_fit = tide_fit.rename({tide_fit.dims[-1]: "tide_hour"}).assign_coords(
-        tide_hour=tide_hours
-    )
-    tide_fit = tide_fit * tide_level_std + tide_level_mean
-    tide_fit_mean = tide_fit.mean(dim=("chain", "draw"))
-    tide_fit_lo, tide_fit_hi = eti_bounds(tide_fit)
-    return tide_fit_hi, tide_fit_lo, tide_fit_mean
-
-
-@app.cell(hide_code=True)
-def _(tide_fit_hi, tide_fit_lo, tide_fit_mean, tide_hours, tide_level):
-    tide_fit_fig = go.Figure()
-    tide_fit_fig.add_trace(
-        go.Scatter(
-            x=np.concatenate([tide_hours, tide_hours[::-1]]),
-            y=np.concatenate([tide_fit_hi.values, tide_fit_lo.values[::-1]]),
-            fill="toself",
-            fillcolor="rgba(21,74,114,0.25)",
-            line=dict(color="rgba(255,255,255,0)"),
-            name="89% ETI",
-        )
-    )
-    tide_fit_fig.add_trace(
-        go.Scatter(
-            x=tide_hours,
-            y=tide_fit_mean.values,
-            mode="lines",
-            name="posterior mean fit",
-            line=dict(color=PYMC_BLUE, width=2),
-        )
-    )
-    tide_fit_fig.add_trace(
-        go.Scatter(
-            x=tide_hours,
-            y=tide_level,
-            mode="markers",
-            name="observed",
-            marker=dict(color="black", size=4),
-        )
-    )
-    tide_fit_fig.update_layout(
-        title="Additive-kernel GP fit — trend + semidiurnal + diurnal",
-        xaxis_title="Hours since slice start",
-        yaxis_title="Water level (m, MLLW)",
-        template="plotly_white",
-    )
-    tide_fit_fig
-    return
-
-
-@app.cell(hide_code=True)
-def _():
-    mo.md(r"""
-    The additive kernel recovers the characteristic mixed-tide shape ,
-    alternating higher and lower high tides each day (the diurnal
-    inequality) riding on a slowly drifting mean level, without ever
-    being told the functional form of a tide curve, just its additive
-    covariance structure.
-
-    Fitting the **full year** (8,760 points) exactly this way is not
-    practical, exact `gp.Marginal` inference costs $O(n^3)$ per
-    gradient evaluation, and this 200-point slice is already close to what
-    that budget allows. Notebook 4 takes that constraint on directly, with two
-    approximations whose cost grows far more slowly: sparse inducing-point
-    GPs, and `pm.gp.HSGP`, a basis-function approximation that is *linear*
-    in $n$.
-
     ### Exercise: compose a kernel for a described pattern
 
     Suppose you have hourly foot-traffic counts at a retail store, and
@@ -2176,19 +1656,297 @@ def _():
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
-    ### Where we are, and what's next
+    ## GP regression *is* conditioning
+
+    Everything so far has been prior: kernels, the curves they imply, and
+    how those curves change as you turn the hyperparameters. Now we
+    condition on data, which is the whole of GP regression and the last
+    thing to see before notebook 3 starts fitting models.
+
+    It is the MVN **conditioning** from the start of this notebook,
+    applied to function values instead of two scalars. Stack the (noisy)
+    observed outputs $\mathbf y$ at training inputs $X$ together with the
+    unknown function values $\mathbf f_*$ at test inputs $X_*$; under the
+    GP prior they are *jointly* MVN. Conditioning $\mathbf f_*$ on
+    $\mathbf y$ gives the posterior
+
+    $$\mathbf f_* \mid \mathbf y \sim \mathcal N\big(
+    K_{*}(K + \sigma^2 I)^{-1}\mathbf y,\ \
+    K_{**} - K_{*}(K + \sigma^2 I)^{-1}K_{*}^{\top}\big),$$
+
+    where $K = k(X,X)$, $K_* = k(X_*,X)$, $K_{**} = k(X_*,X_*)$, and
+    $\sigma^2$ is observation-noise variance added to the training block.
+    Set those matrices to $1 \times 1$ scalars and you get back the
+    $x_1 \mid x_2$ formula from the bivariate example exactly.
+
+    We do it by hand on the theophylline subject that defeated notebook
+    1's piecewise model.
+
+    One choice deserves stating before we make it. The ExpQuad kernel is
+    **stationary**: a single $\ell$ sets the wiggle rate everywhere on the
+    input axis. Theophylline does not oblige, it rises within an hour and
+    then decays for a day, and it is sampled that way too, six points
+    before the fourth hour and then a twelve-hour gap. Ask one lengthscale
+    to serve both regimes on raw time and it must pick a side: long enough
+    to bridge the gap and it flattens the absorption limb, short enough to
+    catch the limb and it forgets everything mid-gap and snaps back to the
+    prior mean. Conditioning on **log-time** puts the fast and slow parts
+    of the curve on comparable footing, so one lengthscale suffices. The
+    kernel's assumptions are claims about the axis you feed it, not just
+    about the function.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    theoph = pl.read_csv(data_dir / "theophylline.csv")
+    theoph.head()
+    return (theoph,)
+
+
+@app.cell(hide_code=True)
+def _(theoph):
+    # One subject, sorted by time, reused for the GP conditioning example below.
+    subject_id = 1
+    subject_df = theoph.filter(pl.col("subject") == subject_id).sort("time")
+
+    time_vals = subject_df["time"].to_numpy()
+    conc_vals = subject_df["conc"].to_numpy()
+
+    conc_mean, conc_std = conc_vals.mean(), conc_vals.std(ddof=0)
+
+    conc_z = z(conc_vals)
+    return conc_mean, conc_std, conc_vals, conc_z, time_vals
+
+
+@app.cell(hide_code=True)
+def _(time_vals):
+    time_grid = np.linspace(time_vals.min(), time_vals.max(), 200)
+    return (time_grid,)
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    We can now do this on the theophylline subject from notebook 1, with
+    no MCMC and no PyMC model: just the conditioning formula applied to
+    kernel matrices. Nothing is being *fitted* here. The formula needs
+    $\ell$, $\eta$ and $\sigma$ before it can be evaluated, and we simply
+    choose them:
+
+    - $\ell = 0.6$ on an input axis about 3.2 units wide, so the curve
+      can bend a handful of times across the day but not between adjacent
+      observations;
+    - $\eta = 1.0$, matching the standardized concentrations, whose
+      standard deviation is 1 by construction;
+    - $\sigma = 0.25$, saying assay noise accounts for about a quarter of
+      the variation.
+
+    The input axis is standardized log-time rather than raw time, for the
+    reason just given.
+    """)
+    return
+
+
+@app.cell
+def _(conc_mean, conc_std, conc_z, time_grid, time_vals):
+    cond_ls, cond_eta, cond_noise = 0.6, 1.0, 0.25
+    cond_log_time = np.log1p(time_vals)
+    cond_log_time_mean, cond_log_time_std = cond_log_time.mean(), cond_log_time.std(ddof=0)
+    Xtr = (cond_log_time - cond_log_time_mean) / cond_log_time_std
+    ytr = conc_z
+    Xstar = (np.log1p(time_grid) - cond_log_time_mean) / cond_log_time_std
+
+    cond_cov = cond_eta**2 * pm.gp.cov.ExpQuad(1, cond_ls)
+    K_tr = cond_cov(Xtr[:, None]).eval() + cond_noise**2 * np.eye(len(Xtr))
+    K_s = cond_cov(Xstar[:, None], Xtr[:, None]).eval()
+    K_ss = cond_cov(Xstar[:, None]).eval()
+
+    cond_solve = np.linalg.solve(K_tr, ytr)
+    post_mean_z = K_s @ cond_solve
+    post_cov = K_ss - K_s @ np.linalg.solve(K_tr, K_s.T)
+    posterior_draws_z = np.random.default_rng(RANDOM_SEED).multivariate_normal(
+        post_mean_z, post_cov + 1e-8 * np.eye(len(post_mean_z)), size=2_000
+    )
+    posterior_draws = xr.DataArray(
+        posterior_draws_z[None, :, :],
+        dims=("chain", "draw", "time_grid"),
+        coords={"chain": [0], "draw": np.arange(len(posterior_draws_z)), "time_grid": time_grid},
+    )
+    gp_post_mean = post_mean_z * conc_std + conc_mean
+    gp_post_lo, gp_post_hi = (
+        endpoint.values for endpoint in eti_bounds(posterior_draws * conc_std + conc_mean)
+    )
+    return gp_post_hi, gp_post_lo, gp_post_mean
+
+
+@app.cell(hide_code=True)
+def _(conc_vals, gp_post_hi, gp_post_lo, gp_post_mean, time_grid, time_vals):
+    gp_reg_fig = go.Figure()
+    gp_reg_fig.add_trace(
+        go.Scatter(
+            x=np.concatenate([time_grid, time_grid[::-1]]),
+            y=np.concatenate([gp_post_hi, gp_post_lo[::-1]]),
+            fill="toself",
+            fillcolor="rgba(21,74,114,0.25)",
+            line=dict(color="rgba(255,255,255,0)"),
+            name="89% ETI",
+        )
+    )
+    gp_reg_fig.add_trace(
+        go.Scatter(
+            x=time_grid,
+            y=gp_post_mean,
+            mode="lines",
+            name="GP posterior mean",
+            line=dict(color=PYMC_GREEN, width=3),
+        )
+    )
+    gp_reg_fig.add_trace(
+        go.Scatter(
+            x=time_vals,
+            y=conc_vals,
+            mode="markers",
+            name="observed",
+            marker=dict(color=PYMC_BLUE, size=9),
+        )
+    )
+    gp_reg_fig.update_layout(
+        title="GP conditioned on subject 1 — the smooth curve the piecewise model couldn't be",
+        xaxis_title="Time since dose (hours)",
+        yaxis_title="Concentration (mg/L)",
+        template="plotly_white",
+    )
+    gp_reg_fig
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.vstack(
+        [
+            mo.md(
+                r"""
+                **Condition on an added point.** Imagine
+                appending one extra, very precise observation at the peak (say,
+                1.5 hours). Using the conditioning formula
+                $\mathbf f_*\mid\mathbf y \sim \mathcal N(K_*(K+\sigma^2
+                I)^{-1}\mathbf y,\ K_{**}-K_*(K+\sigma^2 I)^{-1}K_*^\top)$,
+                predict the local posterior mean and variance changes before
+                checking the discussion.
+                """),
+            mo.accordion(
+                {
+                    "Discussion": mo.md(
+                        r"""
+                        The added row and column make $K_*$ large for prediction
+                        points near 1.5 hours. The posterior mean is pulled
+                        toward the new observation, while the subtracted
+                        covariance term grows locally, so posterior variance
+                        shrinks. A smaller measurement-noise $\sigma$ produces
+                        more shrinkage. Beyond roughly a lengthscale from the
+                        added point, correlation is weak and the conditional
+                        distribution changes little. This is the same local
+                        information update seen in the bivariate-normal
+                        conditioning example.
+                        """
+                    )
+                }
+            ),
+        ]
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    Compare this directly with the piecewise-linear fit from notebook 1. The
+    GP posterior mean glides **smoothly** through the rise, rounds the
+    peak without any corner, and eases down the decay, no knot to place,
+    no $\tau$ to argue over. The shaded 89% ETI is
+    narrow where data are dense (the early rise) and widens where data are
+    sparse (the long tail and beyond the last point), which is precisely
+    uncertainty behavior we wanted and the piecewise model could not
+    provide. We obtained all of it by conditioning a Gaussian, the same
+    operation as the two-scalar example, scaled up to a whole function.
+    **This is the flexible function the piecewise-linear model could not
+    be.**
+
+    So why sample anything, if a closed-form solution produces this?
+    Because the band answers a narrower question than it appears to. It
+    is $p(\mathbf f_* \mid \mathbf y)$ *for the three numbers we picked*,
+    and we picked them by eye. Set $\ell$ to 0.3 instead and you get a
+    different curve with an equally confident band, and nothing in the
+    formula tells you which one to believe. An honest answer has to
+    average over the hyperparameter values the data actually support, and
+    that posterior has no closed form. Sampling is how we get it.
+
+    The closed form also depends on the likelihood being Gaussian. Counts
+    or binary outcomes break it outright, and then even the function
+    values need sampling.
+
+    Notebook 3 does both: priors on $\ell$, $\eta$ and $\sigma$ with
+    `pm.gp.Marginal` for the Gaussian case, and `pm.gp.Latent` when the
+    likelihood is not.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.vstack(
+        [
+            mo.md(
+                r"""
+                **Smoothness and prior implications.** In the
+                hand-built GP regression above we set `cond_ls = 0.6` on the
+                *standardized log-time* axis. Before changing it to 0.3, predict
+                how the prior functions, the fit near the sparse tail, and the
+                89% conditional interval should change.
+                """),
+            mo.accordion(
+                {
+                    "Discussion": mo.md(
+                        r"""
+                        Halving the lengthscale makes prior functions wigglier:
+                        correlation now decays over a shorter distance. The
+                        conditional mean can bend more between observations,
+                        potentially chasing the densely sampled early rise. In
+                        the sparse tail, prediction points lose correlation
+                        with training points sooner, so the mean returns to the
+                        zero prior mean faster and the 89% conditional interval
+                        expands earlier. A longer lengthscale carries structure
+                        farther but can oversmooth the rise. This prior
+                        implication is why notebook 3 infers `ell` rather than
+                        treating one hand-set value as established.
+                        """
+                    )
+                }
+            ),
+        ]
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    ## Where we are, and what's next
 
     This notebook built the Gaussian process from the multivariate
-    normal: marginalization and conditioning, the exponentiated
-    quadratic kernel, a gallery of seven off-the-shelf kernels, and
-    composition of kernels by product and sum, closing with a real
-    additive-kernel fit to NOAA tide data.
+    normal: marginalization and conditioning, the exponentiated quadratic
+    kernel, a gallery of seven off-the-shelf kernels, composition by
+    product and sum, and a composed kernel whose prior draws already look
+    like tides. It closed by conditioning a GP on data, which is GP
+    regression, done by hand with the hyperparameters set by eye.
 
-    **Notebook 3** closes the loop on the theophylline example above: it
-    fits `pm.gp.Marginal` to that same subject, with priors on
-    $\ell,\eta,\sigma$ and real posterior inference in place of the
-    hand-set values used here, then moves to the non-conjugate case ,
-    Poisson counts, with `pm.gp.Latent`.
+    Nothing here was fitted. **Notebook 3** does the fitting: it puts
+    priors on $\ell$, $\eta$ and $\sigma$ and samples them with
+    `pm.gp.Marginal`, on the theophylline subject above and on the tide
+    data, then moves to the non-conjugate case, Poisson counts, with
+    `pm.gp.Latent`.
     """)
     return
 
