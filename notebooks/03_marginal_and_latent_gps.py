@@ -56,18 +56,14 @@ def _():
 
 @app.cell(hide_code=True)
 def _():
-    def _():
-        mo.md(r"""
-        # Marginal and Latent Gaussian Processes
+    mo.md(r"""
+    # Marginal and Latent Gaussian Processes
 
-        This notebook applies Gaussian-process models in PyMC. With a Gaussian
-        likelihood, `pm.gp.Marginal` integrates the latent function out exactly.
-        With a non-Gaussian likelihood, `pm.gp.Latent` represents and samples it
-        directly.
-        """)
-        return
-
-
+    This notebook applies Gaussian-process models in PyMC. With a Gaussian
+    likelihood, `pm.gp.Marginal` integrates the latent function out exactly.
+    With a non-Gaussian likelihood, `pm.gp.Latent` represents and samples it
+    directly.
+    """)
     return
 
 
@@ -107,7 +103,6 @@ def _():
         ).flatten()
         sim_y = f_true + sigma_true * rng.standard_normal(n)
         return sim_x, sim_X, f_true, sim_y
-
 
     sim_ell_true, sim_eta_true, sim_sigma_true = 1.0, 3.0, 2.0
     sim_x, sim_X, sim_f_true, sim_y = simulate_gp_data(
@@ -160,41 +155,37 @@ def _(sim_f_true, sim_x, sim_y):
 
 @app.cell(hide_code=True)
 def _():
-    def _():
-        mo.md(r"""
-        ### The `.marginal_likelihood` method
+    mo.md(r"""
+    ### The `.marginal_likelihood` method
 
-        `pm.gp.Marginal` implements the conjugate case: observations are the
-        GP plus Gaussian noise,
+    `pm.gp.Marginal` implements the conjugate case: observations are the
+    GP plus Gaussian noise,
 
-        $$
-        egin{aligned}
-        f(x) &\sim \mathcal{GP}ig(0,\ k(x, x')ig) \\
-        y &= f(x) + \epsilon, \qquad \epsilon \sim \mathcal N(0, \sigma^2 I)
-        \end{aligned}
-        $$
+    $$
+    \begin{aligned}
+    f(x) &\sim \mathcal{GP}\big(0,\ k(x, x')\big) \\
+    y &= f(x) + \epsilon, \qquad \epsilon \sim \mathcal N(0, \sigma^2 I)
+    \end{aligned}
+    $$
 
-        Because both pieces are Gaussian, $f$ can be integrated out of the
-        joint analytically, the **marginal likelihood**:
+    Because both pieces are Gaussian, $f$ can be integrated out of the
+    joint analytically, the **marginal likelihood**:
 
-        $$p(y \mid X) = \int p(y \mid f, X)\, p(f \mid X)\, df$$
+    $$p(y \mid X) = \int p(y \mid f, X)\, p(f \mid X)\, df$$
 
-        $$
-        \log p(y \mid X) = -	frac12\, y^	op (K + \sigma^2 I)^{-1} y
-        - 	frac12 \log\lvert K + \sigma^2 I
-    vert - 	frac{n}{2}\log 2\pi
-        $$
+    $$
+    \log p(y \mid X) = -\tfrac12\, y^\top (K + \sigma^2 I)^{-1} y
+    - \tfrac12 \log\lvert K + \sigma^2 I \rvert - \tfrac{n}{2}\log 2\pi
+    $$
 
-        The class exposes three methods that mirror this structure directly:
-        `.marginal_likelihood(name, X, y, sigma)` builds the expression above
-        as the model's likelihood, `.conditional(name, Xnew)` builds the
-        posterior over the latent function at new inputs, and `.predict(Xnew,
-        point)` returns a closed-form mean and variance at a single
-        hyperparameter point instead of a full random variable. We use the
-        first two below; `.predict` reappears with the fastball-spin data.
-        """)
-        return
-
+    The class exposes three methods that mirror this structure directly:
+    `.marginal_likelihood(name, X, y, sigma)` builds the expression above
+    as the model's likelihood, `.conditional(name, Xnew)` builds the
+    posterior over the latent function at new inputs, and `.predict(Xnew,
+    point)` returns a closed-form mean and variance at a single
+    hyperparameter point instead of a full random variable. We use the
+    first two below; `.predict` reappears with the fastball-spin data.
+    """)
     return
 
 
@@ -224,7 +215,6 @@ def _(sim_X, sim_y):
                 sim_gp.conditional("f_pred", x_pred, dims="prediction")
         return sim_model, sim_gp
 
-
     sim_model, sim_gp = build_sim_marginal_model(sim_X, sim_y)
     return build_sim_marginal_model, sim_model
 
@@ -251,7 +241,9 @@ def _(sim_idata, sim_model):
     sim_min_ess_bulk = float(sim_summary["ess_bulk"].min())
     sim_min_ess_tail = float(sim_summary["ess_tail"].min())
     sim_max_rhat = float(sim_summary["r_hat"].astype(float).max())
-    print(f"Divergences: {sim_n_div} / {sim_n_draws_total}; health passed: {sim_health_passed}")
+    print(
+        f"Divergences: {sim_n_div} / {sim_n_draws_total}; health passed: {sim_health_passed}"
+    )
     sim_summary.round(4)
     return (
         sim_health_passed,
@@ -681,9 +673,7 @@ def build_marginal_gp_model(X, y, *, X_pred=None, pred_coord=None):
     coords = {"observation": np.arange(len(y)), "feature": ["log_time"]}
     if X_pred is not None:
         coords["prediction"] = (
-            np.asarray(pred_coord)
-            if pred_coord is not None
-            else np.arange(len(X_pred))
+            np.asarray(pred_coord) if pred_coord is not None else np.arange(len(X_pred))
         )
     with pm.Model(coords=coords) as model:
         x_data = pm.Data("X", X, dims=("observation", "feature"))
@@ -703,9 +693,7 @@ def build_marginal_gp_model(X, y, *, X_pred=None, pred_coord=None):
         if X_pred is not None:
             x_pred = pm.Data("X_pred", X_pred, dims=("prediction", "feature"))
             gp.conditional("f_pred", x_pred, dims="prediction")
-            gp.conditional(
-                "f_pred_noise", x_pred, pred_noise=True, dims="prediction"
-            )
+            gp.conditional("f_pred_noise", x_pred, pred_noise=True, dims="prediction")
     return model, gp
 
 
@@ -726,7 +714,8 @@ def _():
                         on the same `log1p(time)` input. Predict the consequences both
                         within the observed range and beyond 24 hours before expanding
                         the discussion.
-                        """),
+                        """
+            ),
             mo.accordion(
                 {
                     "Discussion": mo.md(
@@ -837,7 +826,8 @@ def _():
                         pharmacokinetic curve would make an infinitely smooth ExpQuad
                         prior implausible, and what would you look for in the PPC after
                         the change?
-                        """),
+                        """
+            ),
             mo.accordion(
                 {
                     "Discussion": mo.md(
@@ -1047,7 +1037,6 @@ def _():
             justify="center",
         )
         return
-
 
     return
 
@@ -1294,7 +1283,6 @@ def _(exercise):
         # Explain which uncertainty the MAP plug-in omits and its limiting mean.
         ...
 
-
     exercise_full_posterior_extrapolation()
     return
 
@@ -1314,9 +1302,9 @@ def _(
 ):
     def solution_full_posterior_extrapolation():
         extrap_grid = np.linspace(0, 40, 200)
-        extrap_X = (
-            (np.log1p(extrap_grid) - log_time_mean) / log_time_std
-        ).reshape(-1, 1)
+        extrap_X = ((np.log1p(extrap_grid) - log_time_mean) / log_time_std).reshape(
+            -1, 1
+        )
         extrap_predictions = sample_fresh_model_predictions(
             idata,
             lambda: build_marginal_gp_model(
@@ -1374,7 +1362,6 @@ def _(
             template="plotly_white",
         )
         return mo.as_html(extrap_fig)
-
 
     mo.accordion(
         {
@@ -1507,11 +1494,12 @@ def _(kopech_day_z, kopech_rate_z):
             )
             if day_pred is not None:
                 day_pred_data = pm.Data(
-                    "day_of_year_pred", day_pred[:, None], dims=("prediction", "feature")
+                    "day_of_year_pred",
+                    day_pred[:, None],
+                    dims=("prediction", "feature"),
                 )
                 kopech_gp.conditional("spin_pred", day_pred_data, dims="prediction")
         return kopech_model, kopech_gp
-
 
     kopech_model, kopech_gp = build_kopech_spin_model(kopech_day_z, kopech_rate_z)
     return build_kopech_spin_model, kopech_gp, kopech_model
@@ -1536,7 +1524,8 @@ def _(kopech_idata, kopech_model):
     kopech_summary, kopech_health_passed = inference_health(kopech_idata, kopech_model)
     kopech_n_div = kopech_summary.attrs["divergences"]
     kopech_n_draws_total = (
-        kopech_idata["posterior"].sizes["chain"] * kopech_idata["posterior"].sizes["draw"]
+        kopech_idata["posterior"].sizes["chain"]
+        * kopech_idata["posterior"].sizes["draw"]
     )
     kopech_min_ess_bulk = float(kopech_summary["ess_bulk"].min())
     kopech_min_ess_tail = float(kopech_summary["ess_tail"].min())
@@ -1622,9 +1611,7 @@ def _(
     kopech_pred_fig.add_trace(
         go.Scatter(
             x=np.concatenate([kopech_day_grid, kopech_day_grid[::-1]]),
-            y=np.concatenate(
-                [kopech_pred_high.values, kopech_pred_low.values[::-1]]
-            ),
+            y=np.concatenate([kopech_pred_high.values, kopech_pred_low.values[::-1]]),
             fill="toself",
             fillcolor="rgba(21,74,114,0.2)",
             line=dict(color="rgba(255,255,255,0)"),
@@ -1741,6 +1728,415 @@ def _(
         template="plotly_white",
     )
     kopech_map_fig
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    ## Composed kernels on real data: NOAA tide gauge
+
+    Every fit so far has used a single covariance function. This one uses a
+    **sum** of three, which is the composition idea from notebook 2 put to
+    work: there we drew from this kernel's prior and saw tide-shaped curves
+    appear before any data were involved. Here we fit it.
+
+    The API does not change. It is the same `pm.gp.Marginal` and
+    `.marginal_likelihood` as above, handed a covariance function that
+    happens to be a sum. What changes is that the kernel now encodes
+    specific physical knowledge, and inference has to apportion the signal
+    between its parts.
+
+    ### Background
+
+    NOAA CO-OPS station 9414290 (San Francisco, CA) is a long-record
+    **mixed semidiurnal** tide station: the water level shows two
+    superimposed periodic components, a roughly 12.42-hour
+    **semidiurnal** (twice-daily) tide driven mainly by the moon, and a
+    roughly 23.93-hour **diurnal** (once-daily) tide, riding on top of
+    a slower background trend. Values below are hourly water levels in
+    meters relative to the MLLW (mean lower low water) datum for a
+    slice of 2019.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    N_EXACT = 200
+    tides = pl.read_csv(data_dir / "noaa_tides_hourly.csv")
+    tides = tides.with_columns(
+        pl.col("time").str.strptime(pl.Datetime, "%Y-%m-%d %H:%M")
+    )
+    tides_slice = tides.head(N_EXACT)
+    tides_slice.head()
+    return (tides_slice,)
+
+
+@app.cell(hide_code=True)
+def _(tides_slice):
+    tide_t0 = tides_slice["time"][0]
+    tide_hours = (tides_slice["time"] - tide_t0).dt.total_minutes().to_numpy() / 60.0
+    tide_level = tides_slice["water_level"].to_numpy()
+
+    tide_hours_std = tide_hours.std(ddof=0)
+    tide_level_mean, tide_level_std = tide_level.mean(), tide_level.std(ddof=0)
+
+    X_tide = z(tide_hours).reshape(-1, 1)  # GP inputs are 2D: (n, 1)
+    y_tide = z(tide_level)
+    return (
+        X_tide,
+        tide_hours,
+        tide_hours_std,
+        tide_level,
+        tide_level_mean,
+        tide_level_std,
+        y_tide,
+    )
+
+
+@app.cell(hide_code=True)
+def _(tide_hours, tide_level):
+    tide_fig = go.Figure()
+    tide_fig.add_trace(
+        go.Scatter(
+            x=tide_hours,
+            y=tide_level,
+            mode="lines",
+            line=dict(color=PYMC_BLUE),
+        )
+    )
+    tide_fig.update_layout(
+        title="San Francisco hourly water level, first slice of 2019",
+        xaxis_title="Hours since slice start",
+        yaxis_title="Water level (m, MLLW)",
+        template="plotly_white",
+    )
+    tide_fig
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    ### What is fixed and what is free
+
+    The kernel is a long-lengthscale `Matern52` trend plus two `Periodic`
+    components, one per known physical cycle. Each `Periodic` component's
+    period and within-cycle lengthscale are **fixed**: 12.42h and 23.93h
+    are astronomical constants rather than things to estimate, and the
+    within-cycle lengthscale is set to give each cycle a smooth, roughly
+    sinusoidal shape rather than a sharp spike.
+
+    That restraint is what makes the model samplable. The two periods are
+    nearly commensurate, 23.93h being 1.93 times 12.42h, close enough to a
+    2:1 ratio that each component can partly stand in for the other but
+    not close enough for one to replace it. Free both periods and both
+    within-cycle lengthscales and the posterior becomes strongly
+    correlated and hard to explore. Leaving only the trend lengthscale and
+    the three amplitudes free keeps the geometry well behaved while still
+    letting the data decide how strong each tidal component is.
+    """)
+    return
+
+
+@app.cell
+def _(X_tide, tide_hours_std, y_tide):
+    tide_semi_period_std = 12.42 / tide_hours_std
+    tide_diurnal_period_std = 23.93 / tide_hours_std
+    tide_coords = {
+        "observation": np.arange(len(y_tide)),
+        "feature": ["time"],
+    }
+
+
+    def build_tide_model(X_pred=None):
+        coords = dict(tide_coords)
+        if X_pred is not None:
+            coords["prediction"] = np.arange(len(X_pred))
+        with pm.Model(coords=coords) as tide_model:
+            X_data = pm.Data("X", X_tide, dims=("observation", "feature"))
+            tide_level_data = pm.Data("tide_level", y_tide, dims="observation")
+            ell_trend = pm.LogNormal("ell_trend", mu=0, sigma=1)
+            eta_trend = pm.HalfNormal("eta_trend", sigma=1)
+            cov_trend = eta_trend**2 * pm.gp.cov.Matern52(1, ls=ell_trend)
+            eta_semi = pm.HalfNormal("eta_semi", sigma=1)
+            cov_semi = eta_semi**2 * pm.gp.cov.Periodic(
+                1, period=tide_semi_period_std, ls=0.5
+            )
+            eta_diurnal = pm.HalfNormal("eta_diurnal", sigma=0.5)
+            cov_diurnal = eta_diurnal**2 * pm.gp.cov.Periodic(
+                1, period=tide_diurnal_period_std, ls=0.5
+            )
+            sigma_tide = pm.HalfNormal("sigma_tide", sigma=0.5)
+            gp_tide = pm.gp.Marginal(cov_func=cov_trend + cov_semi + cov_diurnal)
+            gp_tide.marginal_likelihood(
+                "y",
+                X=X_data,
+                y=tide_level_data,
+                sigma=sigma_tide,
+                dims="observation",
+            )
+            if X_pred is not None:
+                X_pred_data = pm.Data("X_pred", X_pred, dims=("prediction", "feature"))
+                gp_tide.conditional("f_tide_pred", X_pred_data, dims="prediction")
+        return tide_model
+
+
+    tide_model = build_tide_model()
+    return build_tide_model, tide_model
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    ### Prior predictive check
+    """)
+    return
+
+
+@app.cell
+def _(tide_model):
+    with tide_model:
+        tide_prior_pred = pm.sample_prior_predictive(draws=500, random_seed=RANDOM_SEED)
+    return (tide_prior_pred,)
+
+
+@app.cell(hide_code=True)
+def _(tide_prior_pred):
+    tide_prior_draws = (
+        tide_prior_pred["prior_predictive"]["y"]
+        .stack(sample=("chain", "draw"))
+        .transpose("sample", "observation")
+    )
+    return (tide_prior_draws,)
+
+
+@app.cell(hide_code=True)
+def _(X_tide, tide_prior_draws, y_tide):
+    tide_prior_fig = go.Figure()
+    rng_plot_tide = np.random.default_rng(0)
+    for _i in rng_plot_tide.choice(
+        tide_prior_draws.sizes["sample"], size=50, replace=False
+    ):
+        tide_prior_fig.add_trace(
+            go.Scatter(
+                x=X_tide[:, 0],
+                y=tide_prior_draws.isel(sample=_i).values,
+                mode="lines",
+                line=dict(color=PYMC_LIGHT_BLUE, width=1),
+                opacity=0.2,
+                showlegend=False,
+            )
+        )
+    tide_prior_fig.add_trace(
+        go.Scatter(
+            x=X_tide[:, 0],
+            y=y_tide,
+            mode="markers",
+            marker=dict(color="black", size=4),
+            name="observed (standardized)",
+        )
+    )
+    tide_prior_fig.update_layout(
+        title="Noisy prior-predictive tide observations vs. data",
+        xaxis_title="time (standardized)",
+        yaxis_title="water level (standardized)",
+        template="plotly_white",
+    )
+    tide_prior_fig
+    return
+
+
+@app.cell(hide_code=True)
+def _(tide_prior_draws, y_tide):
+    mo.md(f"""
+    **Plausibility check:** prior predictive draws span
+    [{tide_prior_draws.min():.2f}, {tide_prior_draws.max():.2f}] on the
+    standardized scale, comfortably bracketing the observed range
+    [{y_tide.min():.2f}, {y_tide.max():.2f}], broad but not absurd,
+    reasonable to proceed to sampling.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    ### Sampling
+
+    5 free hyperparameters (trend $\ell,\eta$; two periodic amplitudes
+    $\eta$; noise $\sigma$, periods and within-cycle shape are fixed,
+    as discussed above) over 200 points.
+    """)
+    return
+
+
+@app.cell
+def _(tide_model):
+    with tide_model:
+        tide_start = perf_counter()
+        tide_idata = pm.sample(draws=500, tune=500, chains=4, random_seed=RANDOM_SEED)
+        tide_sample_seconds = perf_counter() - tide_start
+    tide_idata.to_netcdf(results_dir / "03_tide_exact_gp.nc")
+    return tide_idata, tide_sample_seconds
+
+
+@app.cell(hide_code=True)
+def _(tide_idata, tide_model):
+    tide_summary, tide_health_passed = inference_health(tide_idata, tide_model)
+    tide_n_div = tide_summary.attrs["divergences"]
+    tide_n_draws_total = (
+        tide_idata["posterior"].sizes["chain"] * tide_idata["posterior"].sizes["draw"]
+    )
+    tide_min_ess_bulk = float(tide_summary["ess_bulk"].min())
+    tide_min_ess_tail = float(tide_summary["ess_tail"].min())
+    tide_max_rhat = float(tide_summary["r_hat"].astype(float).max())
+    tide_summary.round(4)
+    return (
+        tide_health_passed,
+        tide_max_rhat,
+        tide_min_ess_bulk,
+        tide_min_ess_tail,
+        tide_n_div,
+        tide_n_draws_total,
+    )
+
+
+@app.cell(hide_code=True)
+def _(
+    tide_health_passed,
+    tide_max_rhat,
+    tide_min_ess_bulk,
+    tide_min_ess_tail,
+    tide_n_div,
+    tide_n_draws_total,
+    tide_sample_seconds,
+):
+    mo.md(f"""
+    **Diagnostics:** {tide_n_div} divergence(s) out of
+    {tide_n_draws_total} draws in {tide_sample_seconds:.1f}s. Minimum
+    `ess_bulk` is {tide_min_ess_bulk:.0f} and minimum `ess_tail` is
+    {tide_min_ess_tail:.0f}, both above the 400 threshold, and
+    maximum `r_hat` is {tide_max_rhat:.3f}. Health gate passed:
+    **{tide_health_passed}**.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(X_tide, build_tide_model, tide_idata):
+    tide_ppc = sample_fresh_model_predictions(
+        tide_idata,
+        lambda: build_tide_model(X_tide),
+        var_names=["f_tide_pred"],
+        random_seed=RANDOM_SEED,
+    )
+    return (tide_ppc,)
+
+
+@app.cell
+def _(build_tide_model, tide_idata):
+    tide_observed_model = build_tide_model()
+    with tide_observed_model:
+        tide_observed_ppc = pm.sample_posterior_predictive(
+            posterior_subset(tide_idata),
+            var_names=["y"],
+            random_seed=RANDOM_SEED,
+        )
+    return (tide_observed_ppc,)
+
+
+@app.cell(hide_code=True)
+def _(tide_observed_ppc, y_tide):
+    tide_replicated = tide_observed_ppc["posterior_predictive"]["y"]
+    tide_ppc_location = tide_replicated.mean(dim="observation")
+    tide_ppc_spread = tide_replicated.std(dim="observation")
+    tide_observed_location = float(y_tide.mean())
+    tide_observed_spread = float(y_tide.std(ddof=0))
+    {
+        "observed_mean": tide_observed_location,
+        "predictive_mean_eti": tide_ppc_location.quantile(
+            [0.055, 0.945], dim=("chain", "draw")
+        ),
+        "observed_sd": tide_observed_spread,
+        "predictive_sd_eti": tide_ppc_spread.quantile(
+            [0.055, 0.945], dim=("chain", "draw")
+        ),
+    }
+    return
+
+
+@app.cell(hide_code=True)
+def _(tide_hours, tide_level_mean, tide_level_std, tide_ppc):
+    tide_fit = tide_ppc["predictions"]["f_tide_pred"]
+    tide_fit = tide_fit.rename({tide_fit.dims[-1]: "tide_hour"}).assign_coords(
+        tide_hour=tide_hours
+    )
+    tide_fit = tide_fit * tide_level_std + tide_level_mean
+    tide_fit_mean = tide_fit.mean(dim=("chain", "draw"))
+    tide_fit_lo, tide_fit_hi = eti_bounds(tide_fit)
+    return tide_fit_hi, tide_fit_lo, tide_fit_mean
+
+
+@app.cell(hide_code=True)
+def _(tide_fit_hi, tide_fit_lo, tide_fit_mean, tide_hours, tide_level):
+    tide_fit_fig = go.Figure()
+    tide_fit_fig.add_trace(
+        go.Scatter(
+            x=np.concatenate([tide_hours, tide_hours[::-1]]),
+            y=np.concatenate([tide_fit_hi.values, tide_fit_lo.values[::-1]]),
+            fill="toself",
+            fillcolor="rgba(21,74,114,0.25)",
+            line=dict(color="rgba(255,255,255,0)"),
+            name="89% ETI",
+        )
+    )
+    tide_fit_fig.add_trace(
+        go.Scatter(
+            x=tide_hours,
+            y=tide_fit_mean.values,
+            mode="lines",
+            name="posterior mean fit",
+            line=dict(color=PYMC_BLUE, width=2),
+        )
+    )
+    tide_fit_fig.add_trace(
+        go.Scatter(
+            x=tide_hours,
+            y=tide_level,
+            mode="markers",
+            name="observed",
+            marker=dict(color="black", size=4),
+        )
+    )
+    tide_fit_fig.update_layout(
+        title="Additive-kernel GP fit: trend + semidiurnal + diurnal",
+        xaxis_title="Hours since slice start",
+        yaxis_title="Water level (m, MLLW)",
+        template="plotly_white",
+    )
+    tide_fit_fig
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    The additive kernel recovers the characteristic mixed-tide shape,
+    alternating higher and lower high tides each day (the diurnal
+    inequality) riding on a slowly drifting mean level, without ever
+    being told the functional form of a tide curve, just its additive
+    covariance structure.
+
+    Fitting the **full year** (8,760 points) exactly this way is not
+    practical. Exact `gp.Marginal` inference costs $O(n^3)$ per gradient
+    evaluation, and this 200-point slice is already close to what that
+    budget allows. Notebook 4 takes that constraint on directly, with two
+    approximations whose cost grows far more slowly: sparse inducing-point
+    GPs, and `pm.gp.HSGP`, a basis-function approximation that is *linear*
+    in $n$.
+    """)
     return
 
 
@@ -1874,7 +2270,6 @@ def _(icm_X, icm_pitchers, icm_rate_z):
         "coregion_rank": ["w1", "w2"],
     }
 
-
     def build_icm_model(X, y, *, X_pred=None, pred_coord=None):
         coords = dict(icm_coords)
         if X_pred is not None:
@@ -1906,7 +2301,6 @@ def _(icm_X, icm_pitchers, icm_rate_z):
                 )
                 icm_gp.conditional("f_pred", X_pred_data, dims="prediction")
         return icm_model, icm_gp
-
 
     icm_model, icm_gp = build_icm_model(icm_X, icm_rate_z)
     return build_icm_model, icm_model
@@ -1986,7 +2380,9 @@ def _(
     icm_day_grid_z = (icm_day_grid - icm_day_mean) / icm_day_std
     icm_n_grid = len(icm_day_grid)
     icm_output_grid = np.repeat(np.arange(len(icm_pitchers)), icm_n_grid)
-    icm_X_grid = np.column_stack([np.tile(icm_day_grid_z, len(icm_pitchers)), icm_output_grid])
+    icm_X_grid = np.column_stack(
+        [np.tile(icm_day_grid_z, len(icm_pitchers)), icm_output_grid]
+    )
 
     icm_predictions = sample_fresh_model_predictions(
         icm_idata,
@@ -2218,41 +2614,37 @@ def _(day_of_season, pitcher_idx_num, pitchers, spin_vals):
 
 @app.cell(hide_code=True)
 def _():
-    def _():
-        mo.md(r"""
-        ### Hierarchical models: partial pooling
+    mo.md(r"""
+    ### Hierarchical models: partial pooling
 
-        These observations are grouped by pitcher. A fully pooled model would give
-        every pitcher the same baseline and time pattern; separate models would fit
-        each pitcher independently. With only ten games per pitcher, separate fits
-        overreact to noise, while a pooled fit erases real differences.
+    These observations are grouped by pitcher. A fully pooled model would give
+    every pitcher the same baseline and time pattern; separate models would fit
+    each pitcher independently. With only ten games per pitcher, separate fits
+    overreact to noise, while a pooled fit erases real differences.
 
-        A hierarchical model gives each pitcher an intercept, but treats those
-        intercepts as related draws from a population distribution:
+    A hierarchical model gives each pitcher an intercept, but treats those
+    intercepts as related draws from a population distribution:
 
-        $$
-        lpha_j = lpha_{\mathrm{pop}} + 	au_lpha z_j,
-        \qquad z_j \sim \mathcal{N}(0, 1).
-        $$
+    $$
+    \alpha_j = \alpha_{\mathrm{pop}} + \tau_\alpha z_j,
+    \qquad z_j \sim \mathcal{N}(0, 1).
+    $$
 
-        This is **partial pooling**. A pitcher with little information is pulled
-        toward the population; a pitcher with clear data can depart from it. The
-        data determine how much pooling is appropriate through $	au_lpha$.
+    This is **partial pooling**. A pitcher with little information is pulled
+    toward the population; a pitcher with clear data can depart from it. The
+    data determine how much pooling is appropriate through $\tau_\alpha$.
 
-        Here the same idea extends from one intercept to a whole trajectory:
+    Here the same idea extends from one intercept to a whole trajectory:
 
-        $$
-        f_j(t) = lpha_{\mathrm{pop}} + lpha_j + f_{\mathrm{pop}}(t) + d_j(t).
-        $$
+    $$
+    f_j(t) = \alpha_{\mathrm{pop}} + \alpha_j + f_{\mathrm{pop}}(t) + d_j(t).
+    $$
 
-        The population GP $f_{\mathrm{pop}}(t)$ describes shared time variation;
-        $d_j(t)$ is pitcher $j$'s GP departure. Constraining the departures to
-        average to zero makes the population curve the average trajectory rather
-        than letting a deviation duplicate it.
-        """)
-        return
-
-
+    The population GP $f_{\mathrm{pop}}(t)$ describes shared time variation;
+    $d_j(t)$ is pitcher $j$'s GP departure. Constraining the departures to
+    average to zero makes the population curve the average trajectory rather
+    than letting a deviation duplicate it.
+    """)
     return
 
 
@@ -2654,7 +3046,6 @@ def _(exercise):
         # State why the smaller prior scale gives stronger functional pooling.
         ...
 
-
     exercise_functional_pooling_sensitivity()
     return
 
@@ -2671,7 +3062,6 @@ def _(
 ):
     sensitivity_results = {}
 
-
     def _fit_functional_pooling_sensitivity():
         if not sensitivity_results:
             sensitivity_model = build_spin_model(eta_dev_sigma=0.1)
@@ -2685,7 +3075,6 @@ def _(
                     random_seed=RANDOM_SEED,
                 )
         return sensitivity_results["idata"]
-
 
     def solution_functional_pooling_sensitivity():
         sensitivity_idata = _fit_functional_pooling_sensitivity()
@@ -2732,7 +3121,6 @@ def _(
         )
         return mo.as_html(sensitivity_fig)
 
-
     def functional_pooling_sensitivity_details():
         sensitivity_idata = _fit_functional_pooling_sensitivity()
         return mo.vstack(
@@ -2751,7 +3139,6 @@ def _(
                 ),
             ]
         )
-
 
     mo.accordion(
         {
@@ -2815,8 +3202,12 @@ def _():
         robust_y = f_true + sigma_true * rng.standard_t(nu_true, size=n)
         return robust_X, f_true, robust_y
 
-
-    robust_ell_true, robust_eta_true, robust_sigma_true, robust_nu_true = 1.0, 3.0, 2.0, 3.0
+    robust_ell_true, robust_eta_true, robust_sigma_true, robust_nu_true = (
+        1.0,
+        3.0,
+        2.0,
+        3.0,
+    )
     robust_X, robust_f_true, robust_y = simulate_robust_data(
         RANDOM_SEED + 7,
         ell_true=robust_ell_true,
@@ -2909,7 +3300,6 @@ def _(robust_X, robust_y):
                 robust_gp.conditional("f_pred", X_pred_data, dims="prediction")
         return robust_model, robust_gp
 
-
     robust_model, robust_gp = build_robust_model(robust_X, robust_y)
     return (robust_model,)
 
@@ -2937,7 +3327,8 @@ def _(robust_idata, robust_model):
     robust_summary, robust_health_passed = inference_health(robust_idata, robust_model)
     robust_n_div = robust_summary.attrs["divergences"]
     robust_n_draws_total = (
-        robust_idata["posterior"].sizes["chain"] * robust_idata["posterior"].sizes["draw"]
+        robust_idata["posterior"].sizes["chain"]
+        * robust_idata["posterior"].sizes["draw"]
     )
     robust_min_ess_bulk = float(robust_summary["ess_bulk"].min())
     robust_min_ess_tail = float(robust_summary["ess_tail"].min())
@@ -3074,7 +3465,8 @@ def _():
                 answer; the posterior-predictive table later in this
                 notebook reports the replicated zero fraction, and you can
                 check yourself against it there.
-                """),
+                """
+            ),
             mo.accordion(
                 {
                     "Discussion": mo.md(
@@ -3189,7 +3581,6 @@ def _(exercise):
         # az.plot_ppc_dist for a qualitative posterior predictive check.
         ...
 
-
     exercise_latent_poisson_coal_gp()
     return
 
@@ -3198,18 +3589,13 @@ def _(exercise):
 def _(disaster_counts, ell_prior, inspect, year_vals):
     coal_results = {}
 
-
     def _fit_latent_poisson_coal_gp():
         if not coal_results:
             coords = {"year": year_vals}
             with pm.Model(coords=coords) as coal_model:
                 year_data = pm.Data("year_input", year_vals[:, None])
-                count_data = pm.Data(
-                    "disaster_count", disaster_counts, dims="year"
-                )
-                ell = pm.Gamma(
-                    "ell", alpha=ell_prior.alpha, beta=ell_prior.beta
-                )
+                count_data = pm.Data("disaster_count", disaster_counts, dims="year")
+                ell = pm.Gamma("ell", alpha=ell_prior.alpha, beta=ell_prior.beta)
                 eta = pm.HalfNormal("eta", sigma=1)
                 cov = eta**2 * pm.gp.cov.Matern52(1, ls=ell)
                 coal_gp = pm.gp.Latent(cov_func=cov)
@@ -3229,7 +3615,6 @@ def _(disaster_counts, ell_prior, inspect, year_vals):
                     coal_results["idata"], var_names=["y"], random_seed=RANDOM_SEED
                 )
         return coal_results["idata"], coal_results["ppc"]
-
 
     def solution_latent_poisson_coal_gp():
         coal_idata, _ = _fit_latent_poisson_coal_gp()
@@ -3275,13 +3660,11 @@ def _(disaster_counts, ell_prior, inspect, year_vals):
         )
         return mo.as_html(rate_fig)
 
-
     def latent_poisson_coal_gp_details():
         coal_idata, _ = _fit_latent_poisson_coal_gp()
         ppc_ax = az.plot_ppc_dist(coal_idata, var_names=["y"], num_samples=50)
         ppc_ax.figure.set_size_inches(6, 3.5)
         return mo.as_html(ppc_ax)
-
 
     def coal_solution_plots():
         return mo.hstack(
@@ -3292,7 +3675,6 @@ def _(disaster_counts, ell_prior, inspect, year_vals):
             widths="equal",
             gap=1,
         )
-
 
     mo.accordion(
         {
@@ -3683,7 +4065,7 @@ def _():
     conditional on a regular longitude/latitude grid covering the
     county centroids, the same `.conditional` +
     `pm.sample_posterior_predictive` pattern used for `f_tide_pred` and
-    `f_pred` in Notebook 2, rather than a single
+    `f_pred` above, rather than a single
     plug-in point estimate, so the heatmap below reflects the actual
     posterior mean over hyperparameters. The grid is kept modest
     (20x20 = 400 points) since `.conditional` draws a full-covariance
