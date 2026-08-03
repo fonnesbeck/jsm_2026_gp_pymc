@@ -52,27 +52,8 @@ def _():
     mo.md(r"""
     # Gaussian Process Priors and Covariance Functions
 
-    Notebook 1 fit two models whose functional form had to be chosen by
-    hand, a piecewise-linear curve, then a spline. This notebook builds a
-    model that instead states a belief about *smoothness* and lets the data
-    supply the shape: the **Gaussian process** (GP).
-
-    **From multivariate normals to Gaussian processes.** Two properties of
-    the multivariate normal, marginalization and conditioning, turn out
-    to be the entire mathematical machinery a GP needs. We code a
-    covariance function from scratch, draw sample functions from a GP
-    prior, and condition a GP on data by hand on a theophylline subject.
-
-    **Part A, the kernel gallery.** Different covariance functions encode
-    different assumptions about smoothness, periodicity, and linearity. We
-    build intuition by drawing prior samples from seven common kernels and
-    comparing them side by side.
-
-    **Part B, kernel composition.** Kernels can be added (OR: either
-    structure explains the data) or multiplied (AND: both structures
-    apply simultaneously) to build richer covariance functions. We fit an
-    additive kernel, trend plus two tidal cycles, to a slice of real
-    NOAA tide-gauge data.
+    Unlike splines or polynomial models, building Gaussian process models is about specifying a belief about *smoothness* and and then letting the data
+    define the shape. We will help you try to develop an intuition about this approach here.
     """)
     return
 
@@ -87,7 +68,7 @@ def _():
     up front. Remarkably, the tool for that is built entirely out of the
     **multivariate normal (MVN)** distribution you already know. This
     section assembles it piece by piece: two key properties of the MVN, a
-    covariance function you code yourself, sample functions drawn from a
+    covariance function, sample functions drawn from a
     GP prior, and finally conditioning a GP on data, the operation that
     *is* GP regression.
 
@@ -136,46 +117,51 @@ def _():
 
 @app.cell(hide_code=True)
 def _():
-    # A concrete correlated bivariate normal to work marginalization/conditioning by hand.
+    mo.md(r"""
+    Take two scalars $x_1$ and $x_2$ that are jointly normal, with
+
+    $$\boldsymbol\mu = \begin{bmatrix} 1.0 \\ 2.0 \end{bmatrix},
+    \qquad
+    \Sigma = \begin{bmatrix} 1.0 & 0.8 \\ 0.8 & 1.5 \end{bmatrix}.$$
+
+    Marginalizing to $x_1$ reads off the top-left entries, giving
+    $x_1 \sim \mathcal N(1.0,\ 1.0)$. Conditioning on an observed
+    $x_2 = 3.5$ puts the same numbers through the formula above.
+    """)
+    return
+
+
+@app.cell
+def _():
     biv_mean = np.array([1.0, 2.0])
     biv_cov = np.array([[1.0, 0.8], [0.8, 1.5]])
-
-    # Condition x1 on an observed x2 = 3.5 using the conditioning formula.
     x2_obs = 3.5
+
     cond_mean = biv_mean[0] + biv_cov[0, 1] / biv_cov[1, 1] * (x2_obs - biv_mean[1])
     cond_var = biv_cov[0, 0] - biv_cov[0, 1] ** 2 / biv_cov[1, 1]
     cond_sd = np.sqrt(cond_var)
 
-    print(f"Marginal of x1:       mean = {biv_mean[0]:.3f}, var = {biv_cov[0, 0]:.3f}")
-    print(f"Conditional x1|x2=3.5: mean = {cond_mean:.3f}, var = {cond_var:.3f}")
-    return biv_cov, biv_mean, cond_mean, cond_sd, x2_obs
+    pl.DataFrame(
+        {
+            "distribution": ["marginal x1", "conditional x1 | x2 = 3.5"],
+            "mean": [biv_mean[0], cond_mean],
+            "variance": [biv_cov[0, 0], cond_var],
+        }
+    )
+    return biv_cov, biv_mean, cond_mean, cond_sd, cond_var, x2_obs
 
 
 @app.cell(hide_code=True)
-def _(biv_cov, biv_mean, cond_mean, cond_sd, x2_obs):
+def _(biv_cov, biv_mean, cond_mean, cond_var, x2_obs):
     mo.md(f"""
-    **Worked numbers.** Our joint has $\\boldsymbol\\mu = (1, 2)$ and
-
-    $$\\Sigma = \\begin{{bmatrix}} 1.0 & 0.8\\\\ 0.8 & 1.5
-    \\end{{bmatrix}}.$$
-
-    *Marginalizing* to $x_1$ just reads off the top-left block:
-    $x_1 \\sim \\mathcal N(1.0,\\ 1.0)$, mean {biv_mean[0]:.1f}, variance
-    {biv_cov[0, 0]:.1f}.
-
-    *Conditioning* on observing $x_2 = {x2_obs}$ uses the formula above.
     The observed $x_2$ is {x2_obs - biv_mean[1]:.1f} above its own mean,
-    and the positive covariance drags $x_1$ upward with it:
+    and the positive covariance pulls $x_1$ up with it, from
+    {biv_mean[0]:.1f} to {cond_mean:.2f}. The variance drops from
+    {biv_cov[0, 0]:.1f} to {cond_var:.3f}, because knowing $x_2$ tells us
+    something about $x_1$.
 
-    $$\\mathbb E[x_1 \\mid x_2={x2_obs}] = 1.0 +
-    \\tfrac{{0.8}}{{1.5}}({x2_obs}-2.0) = {cond_mean:.3f},$$
-
-    while the conditional variance *shrinks* from 1.0 to
-    {cond_sd**2:.3f} (sd {cond_sd:.3f}), knowing $x_2$ has told us
-    something about $x_1$, so we are less uncertain than the marginal.
-    **That shrink-toward-the-data-with-reduced-uncertainty is the whole
-    idea of GP regression**, applied to function values instead of two
-    scalars.
+    That shift toward the data with reduced uncertainty is the whole idea
+    of GP regression, applied to function values instead of two scalars.
     """)
     return
 
@@ -237,7 +223,7 @@ def _():
 
     ### A Gaussian process is a distribution over functions
 
-    Now take the leap. A **Gaussian process** generalizes the MVN to
+    A **Gaussian process** generalizes the MVN to
     *infinitely many* variables. Formally, a GP is a collection of random
     variables, **any finite subset of which is jointly multivariate
     normal**. If we think of a function $f$ as an infinitely long vector
@@ -249,13 +235,16 @@ def _():
     Just as an MVN needs a mean *vector* and covariance *matrix*, a GP
     needs a **mean function** $m(x)$ and a **covariance function**
     $k(x, x')$ (the *kernel*), which returns the covariance between the
-    function's values at any two inputs. The **marginalization** property
+    function's values at any two inputs.
+
+    The **marginalization** property
     is what makes this usable: to work with a GP at a finite set of input
     points, we just evaluate $m$ and $k$ on that set to get an ordinary
     MVN and proceed, the infinitely many unqueried points marginalize
-    away for free. And the **conditioning** property (next) is what turns
-    the GP prior into a posterior given data. Everything reduces to the
-    two MVN operations you just did by hand.
+    away for free.
+
+    The **conditioning** property is what turns
+    the GP prior into a posterior given data, and allows us to make predictions from a fitted GP.
     """)
     return
 
@@ -263,11 +252,21 @@ def _():
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
-    PyMC ships this exact kernel as `pm.gp.cov.ExpQuad`. One important
-    convention: PyMC's GP covariance functions expect **2-D inputs of
-    shape `(n, 1)`** (one row per input point), even in a single input
-    dimension, unlike the from-scratch version, which takes plain 1-D
-    arrays. We keep GP inputs 2-D throughout the workshop.
+    ### The exponentiated quadratic kernel
+
+    To go further we need a concrete kernel. The most common one is the
+    **exponentiated quadratic**, also called the squared exponential or
+    RBF:
+
+    $$k(x, x') = \eta^2 \exp\!\left(-\frac{(x - x')^2}{2\ell^2}\right).$$
+
+    The covariance is $\eta^2$ when two points coincide and decays
+    smoothly to zero as they separate, at a rate set by the lengthscale
+    $\ell$. PyMC provides it as `pm.gp.cov.ExpQuad(input_dim, ls)`.
+
+    One convention to note: PyMC's covariance functions expect inputs of
+    shape `(n, 1)` rather than plain 1-D arrays, even in a single input
+    dimension. We keep GP inputs 2-D throughout the workshop.
     """)
     return
 
@@ -343,9 +342,175 @@ def _():
     ### Drawing sample functions from a GP prior
 
     With a kernel in hand we can *sample whole functions* from the GP
-    prior: evaluate the kernel on a grid to get $K$, then draw from
-    $\mathcal N(\mathbf 0, K)$. Each draw is one plausible function
-    under the prior.
+    prior. It is worth doing that slowly the first time, one point at a
+    time, because it shows where the function comes from.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    Start with no data at all. Under a zero-mean prior every function
+    value is $\mathcal N(0, \eta^2)$ on its own, which is the flat band
+    below. Now sample a value at a single input. Every other point on the
+    grid is correlated with it, so conditioning on it, with the same
+    formula used for $x_1 \mid x_2$, gives a new mean and a narrower
+    variance everywhere nearby. Sample the next point from *that*
+    conditional, condition again, and repeat.
+
+    Drag the slider to add points one at a time and watch the band
+    collapse onto a single curve. **New realization** reseeds and starts
+    over.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    seq_amplitude, seq_ls = 1.0, 0.5
+    seq_x_locations = [
+        1.0, -0.7, -2.1, -1.5, 0.3, 1.8, 2.5,
+        -2.7, -2.4, -1.8, -1.2, -0.3, 0.8, 1.4, 2.2,
+    ]
+
+
+    def seq_covariance(a, b):
+        """The ExpQuad kernel in numpy, so the demo can call it in a loop."""
+        return seq_amplitude**2 * np.exp(
+            -0.5 * np.subtract.outer(a, b) ** 2 / seq_ls**2
+        )
+
+
+    def seq_states(seed):
+        """Draw each point from its conditional given the points already
+        drawn, recording the conditional over the whole grid at each step."""
+        rng = np.random.default_rng(seed)
+        x_grid = np.linspace(-3, 3, 400)
+        x, y = [], []
+        prior_variance = seq_covariance(0.0, 0.0)
+        states = [
+            (
+                np.array(x),
+                np.array(y),
+                np.zeros_like(x_grid),
+                np.full_like(x_grid, prior_variance, dtype=float),
+            )
+        ]
+
+        for x_new in seq_x_locations:
+            if x:
+                cross = seq_covariance([x_new], x)
+                observed = seq_covariance(x, x)
+                mean = cross @ np.linalg.solve(observed, y)
+                variance = seq_covariance([x_new], [x_new]) - cross @ np.linalg.solve(
+                    observed, cross.T
+                )
+                y_new = rng.normal(mean.item(), np.sqrt(variance.item()))
+            else:
+                y_new = rng.normal(scale=np.sqrt(prior_variance))
+            x.append(x_new)
+            y.append(y_new)
+
+            observed = seq_covariance(x, x)
+            cross = seq_covariance(x_grid, x)
+            mean_grid = cross @ np.linalg.solve(observed, y)
+            variance_grid = (
+                np.diag(seq_covariance(x_grid, x_grid))
+                - np.sum(cross * np.linalg.solve(observed, cross.T).T, axis=1)
+                + 1e-8
+            )
+            states.append((np.array(x), np.array(y), mean_grid, variance_grid))
+
+        return x_grid, states
+
+    return seq_states, seq_x_locations
+
+
+@app.cell(hide_code=True)
+def _(seq_x_locations):
+    seq_get_seed, seq_set_seed = mo.state(RANDOM_SEED)
+    seq_get_point_count, seq_set_point_count = mo.state(0)
+
+    seq_slider = mo.ui.slider(
+        0,
+        len(seq_x_locations),
+        value=seq_get_point_count(),
+        step=1,
+        label="Conditional points",
+        on_change=seq_set_point_count,
+    )
+    seq_reset = mo.ui.button(
+        label="New realization",
+        on_click=lambda _: (seq_set_seed(lambda s: s + 1), seq_set_point_count(0)),
+    )
+    mo.hstack([seq_slider, seq_reset])
+    return seq_get_point_count, seq_get_seed
+
+
+@app.cell(hide_code=True)
+def _(seq_get_point_count, seq_get_seed, seq_states):
+    seq_x_grid, seq_all_states = seq_states(seq_get_seed())
+    seq_n_points = seq_get_point_count()
+    seq_x_pts, seq_y_pts, seq_mean, seq_variance = seq_all_states[seq_n_points]
+    seq_sd = np.sqrt(seq_variance)
+
+    seq_fig = go.Figure()
+    seq_fig.add_trace(
+        go.Scatter(
+            x=np.concatenate([seq_x_grid, seq_x_grid[::-1]]),
+            y=np.concatenate([seq_mean + seq_sd, (seq_mean - seq_sd)[::-1]]),
+            fill="toself",
+            fillcolor="rgba(21,74,114,0.25)",
+            line=dict(color="rgba(255,255,255,0)"),
+            name="\u00b11 sd",
+        )
+    )
+    seq_fig.add_trace(
+        go.Scatter(
+            x=seq_x_grid,
+            y=seq_mean,
+            mode="lines",
+            line=dict(color=PYMC_BLUE, width=2),
+            name="conditional mean",
+        )
+    )
+    seq_fig.add_trace(
+        go.Scatter(
+            x=seq_x_pts,
+            y=seq_y_pts,
+            mode="markers",
+            marker=dict(color=PYMC_GREEN, size=10),
+            name="sampled points",
+        )
+    )
+    seq_fig.update_layout(
+        title=f"One realization of the GP prior, conditioned on {seq_n_points} points",
+        xaxis_title="x",
+        yaxis_title="f(x)",
+        xaxis=dict(range=[-3, 3]),
+        yaxis=dict(range=[-3, 3]),
+        template="plotly_white",
+        height=420,
+    )
+    seq_fig
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    By the last point the band has closed and what is the sillhouette of a
+    smooth curve: one draw from the GP prior, built entirely out of
+    conditioning.
+
+    Nobody samples a GP this way in practice. Because *any* finite set of
+    function values is jointly normal, we can skip the sequence and
+    evaluate the kernel on the whole grid at once, then draw from
+    $\mathcal N(\mathbf 0, K)$ in one step.
+
+    In either case, each draw is one plausible
+    function under the prior.
     """)
     return
 
@@ -464,12 +629,22 @@ def _(time_vals):
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
-    The cell below conditions a zero-mean GP prior on subject 1's
-    standardized data by hand. Its kernel is *stationary*: a single
-    lengthscale governs the whole axis. On raw time that is hopeless
-    here, because the drug does everything in the first two hours and
-    then decays for a day, so we condition on standardized log-time
-    instead, the same input transform notebook 3 uses.
+    We can now do this on the theophylline subject from notebook 1, with
+    no MCMC and no PyMC model: just the conditioning formula applied to
+    kernel matrices. Nothing is being *fitted* here. The formula needs
+    $\ell$, $\eta$ and $\sigma$ before it can be evaluated, and we simply
+    choose them:
+
+    - $\ell = 0.6$ on an input axis about 3.2 units wide, so the curve
+      can bend a handful of times across the day but not between adjacent
+      observations;
+    - $\eta = 1.0$, matching the standardized concentrations, whose
+      standard deviation is 1 by construction;
+    - $\sigma = 0.25$, saying assay noise accounts for about a quarter of
+      the variation.
+
+    The input axis is standardized log-time rather than raw time, for the
+    reason just given.
     """)
     return
 
@@ -599,10 +774,22 @@ def _():
     **This is the flexible function the piecewise-linear model could not
     be.**
 
-    We fixed $\ell$, $\eta$, and $\sigma$ by hand here to isolate the
-    conditioning idea. In notebook 3 we put priors on those
-    hyperparameters and let PyMC infer them, with full posterior
-    uncertainty, the natural next step now that the concept is in place.
+    So why sample anything, if a closed-form solution produces this?
+    Because the band answers a narrower question than it appears to. It
+    is $p(\mathbf f_* \mid \mathbf y)$ *for the three numbers we picked*,
+    and we picked them by eye. Set $\ell$ to 0.3 instead and you get a
+    different curve with an equally confident band, and nothing in the
+    formula tells you which one to believe. An honest answer has to
+    average over the hyperparameter values the data actually support, and
+    that posterior has no closed form. Sampling is how we get it.
+
+    The closed form also depends on the likelihood being Gaussian. Counts
+    or binary outcomes break it outright, and then even the function
+    values need sampling.
+
+    Notebook 3 does both: priors on $\ell$, $\eta$ and $\sigma$ with
+    `pm.gp.Marginal` for the Gaussian case, and `pm.gp.Latent` when the
+    likelihood is not.
     """)
     return
 
@@ -1583,7 +1770,7 @@ def _():
       decaying ExpQuad gives a periodic pattern that fades in and out ,
       `pm.gp.cov.Periodic` combined this way is one route to a
       quasi-periodic kernel), or how an ARD kernel over multiple input
-      dimensions is built (Part C).
+      dimensions is built.
 
     Below we compose an **additive** kernel: a long-lengthscale
     `Matern52` trend plus two `Periodic` components, one for each known
@@ -1757,10 +1944,6 @@ def _(tide_idata, tide_model):
     tide_min_ess_bulk = float(tide_summary["ess_bulk"].min())
     tide_min_ess_tail = float(tide_summary["ess_tail"].min())
     tide_max_rhat = float(tide_summary["r_hat"].astype(float).max())
-    print(
-        f"Divergences: {tide_n_div} / {tide_n_draws_total}; "
-        f"health passed: {tide_health_passed}"
-    )
     tide_summary.round(4)
     return (
         tide_health_passed,
@@ -1996,8 +2179,8 @@ def _():
     ### Where we are, and what's next
 
     This notebook built the Gaussian process from the multivariate
-    normal: marginalization and conditioning, a covariance function
-    coded from scratch, a gallery of seven off-the-shelf kernels, and
+    normal: marginalization and conditioning, the exponentiated
+    quadratic kernel, a gallery of seven off-the-shelf kernels, and
     composition of kernels by product and sum, closing with a real
     additive-kernel fit to NOAA tide data.
 
