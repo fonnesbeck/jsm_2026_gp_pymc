@@ -173,10 +173,7 @@ def _():
 
     $$p(y \mid X) = \int p(y \mid f, X)\, p(f \mid X)\, df$$
 
-    $$
-    \log p(y \mid X) = -\tfrac12\, y^\top (K + \sigma^2 I)^{-1} y
-    - \tfrac12 \log\lvert K + \sigma^2 I \rvert - \tfrac{n}{2}\log 2\pi
-    $$
+    $$\log p(y \mid X) = -\tfrac12\, y^\top (K + \sigma^2 I)^{-1} y - \tfrac12 \log\lvert K + \sigma^2 I \rvert - \tfrac{n}{2}\log 2\pi$$
 
     The class exposes three methods that mirror this structure directly:
     `.marginal_likelihood(name, X, y, sigma)` builds the expression above
