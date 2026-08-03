@@ -55,7 +55,7 @@ curl -fsSL https://pixi.sh/install.sh | bash
 **Windows PowerShell**
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm -Uri https://pixi.sh/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm -useb https://pixi.sh/install.ps1 | iex"
 ```
 
 Close and reopen the terminal after installation. If `pixi` is still not
