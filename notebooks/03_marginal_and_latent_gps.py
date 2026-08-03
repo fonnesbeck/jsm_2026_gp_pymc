@@ -52,6 +52,18 @@ def _():
     return exercise, inspect
 
 
+@app.function(hide_code=True)
+def svg_figure(fig):
+    """Render a matplotlib figure as inline SVG: sharp, and sized in inches."""
+    import io
+    import matplotlib.pyplot as plt
+
+    buffer = io.StringIO()
+    fig.savefig(buffer, format="svg", bbox_inches="tight")
+    plt.close(fig)
+    return mo.Html(buffer.getvalue())
+
+
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
@@ -68,30 +80,31 @@ def _():
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
-    ## Marginal GP regression
+    ## Marginal likelihood GP regression
 
-    The simplest GP regression model assumes that observations are a smooth
-    latent function plus independent Gaussian noise:
+    The simplest case of GP regression is the **marginal likelihood** model.
+    It applies when the observed data are the sum of an unknown function and
+    Gaussian noise. Given a mean function and covariance function, we write
+
+    $$f(x) \sim \mathcal{GP}\bigl(m(x),\, k(x, x')\bigr),$$
+
+    and model the observations as
 
     $$
     \begin{aligned}
-    f(x) &\sim \mathcal{GP}\bigl(m(x),\, k(x, x')\bigr), \\
-    y_i \mid f(x_i) &\sim \mathcal{N}\bigl(f(x_i),\, \sigma^2\bigr).
+    \epsilon_i &\sim \mathcal N(0, \sigma^2), \\
+    y_i &= f(x_i) + \epsilon_i.
     \end{aligned}
     $$
 
-    This is the conjugate case. At the observed inputs, the latent function
-    and the observation noise are both Gaussian, so the function values can
-    be integrated out exactly. PyMC's `pm.gp.Marginal` performs that
-    marginalization: you specify the mean function, covariance function,
-    and noise model, and it constructs the resulting multivariate-normal
-    likelihood for the observations.
+    PyMC implements this model with **pm.gp.Marginal**. You provide the mean,
+    the covariance, and the noise scale; PyMC builds the Gaussian
+    calculations that connect them to the observations.
 
-    Notebook 2 derived the same Gaussian conditioning calculation by hand.
-    Here we use the API on **simulated** data: one draw from a GP with known
+    We begin with **simulated data**: one GP realization with known
     lengthscale $\ell$, amplitude $\eta$, and noise scale $\sigma$. That
-    lets us check whether the posterior recovers the values that generated
-    the data before applying the model to real observations.
+    makes it possible to compare the posterior with the values used to
+    generate the data before moving on to real examples.
     """)
     return
 
@@ -165,31 +178,35 @@ def _(sim_f_true, sim_x, sim_y):
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
-    ### What `.marginal_likelihood` builds
+    ### The marginal likelihood
 
-    Marginalizing the latent function gives the **marginal likelihood**:
+    The unknown function values can be analytically integrated out of the
+    product of the GP prior and the Gaussian likelihood. This quantity is
+    the **marginal likelihood**:
 
-    $$p(\mathbf y \mid X) = \int p(\mathbf y \mid \mathbf f, X)\, p(\mathbf f \mid X)\, d\mathbf f,$$
+    $$p(\mathbf y \mid X) = \int p(\mathbf y \mid \mathbf f, X)\, p(\mathbf f \mid X)\, d\mathbf f.$$
 
-    or, equivalently,
+    For a GP with Gaussian noise, the result is another multivariate normal:
 
-    $$\mathbf y \mid X \sim \mathcal N\bigl(\mathbf m,\ K + \sigma^2 I\bigr).$$
+    $$\mathbf y \mid X \sim \mathcal N\bigl(\mathbf m,\, K + \sigma^2 I\bigr).$$
 
-    `pm.gp.Marginal.marginal_likelihood(name, X, y, sigma)` creates this
-    multivariate-normal likelihood. The log density is
+    **pm.gp.Marginal.marginal_likelihood(name, X, y, sigma)** adds a
+    multivariate-normal likelihood to the model, rather than adding every
+    latent function value as a parameter. Its log density is
 
     $$\log p(\mathbf y \mid X) = -\tfrac12\, (\mathbf y - \mathbf m)^\top (K + \sigma^2 I)^{-1}(\mathbf y - \mathbf m) - \tfrac12 \log\lvert K + \sigma^2 I \rvert - \tfrac{n}{2}\log 2\pi.$$
 
-    The quadratic term rewards covariances that explain the observations;
-    the log determinant penalizes covariance structures flexible enough to
-    explain too many possible data sets. Their trade-off identifies the
-    covariance hyperparameters. A scalar `sigma` represents white noise,
-    while a covariance function can represent correlated Gaussian noise.
+    The first term measures how well the covariance explains the data. The
+    log-determinant term favors covariance structures that do not explain
+    all possible data sets equally well. Together they update the covariance
+    hyperparameters. A scalar **sigma** gives white noise; a covariance
+    function can instead represent correlated Gaussian noise.
 
-    `.conditional(name, Xnew)` then constructs the posterior over the
-    latent function at new inputs. `.predict(Xnew, point)` instead returns
-    the closed-form mean and variance at one hyperparameter point. We use
-    the first two below; `.predict` returns with the fastball-spin data.
+    The same Gaussian calculations give us predictions. **.conditional(name,
+    Xnew)** constructs the posterior over the latent function at new inputs,
+    while **.predict(Xnew, point)** returns a closed-form mean and variance at
+    one hyperparameter point. We use the first two below; **.predict** returns
+    with the fastball-spin data.
     """)
     return
 
@@ -459,22 +476,11 @@ def _(theoph):
     time_vals = subj["time"].to_numpy()
     conc_vals = subj["conc"].to_numpy()
 
-    time_mean, time_std = time_vals.mean(), time_vals.std(ddof=0)
     conc_mean, conc_std = conc_vals.mean(), conc_vals.std(ddof=0)
 
-    X = z(time_vals).reshape(-1, 1)  # GP inputs are 2D: (n, 1)
     y = z(conc_vals)
-    return (
-        X,
-        conc_mean,
-        conc_std,
-        conc_vals,
-        subject_id,
-        time_mean,
-        time_std,
-        time_vals,
-        y,
-    )
+
+    return conc_mean, conc_std, conc_vals, subject_id, time_vals, y
 
 
 @app.cell(hide_code=True)
@@ -503,160 +509,28 @@ def _(conc_vals, subject_id, time_vals):
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
-    ### A naive first attempt
+    ### Two choices before fitting
 
-    Before building anything careful, it is worth writing the model you
-    would actually reach for first and seeing where it falls short. What
-    goes wrong here points straight at the two choices the rest of this
-    section rests on: the scale the inputs are measured on, and whether
-    the GP carries a mean function. Neither is obvious in advance, and
-    neither is visible until a simpler model has failed.
+    Two features of these data shape the model. First, the sampling times
+    are very unevenly spaced: dense near the dose (0, 0.25, 0.57, 1.12,
+    2.02 hours, where concentration is rising fastest) and sparse in the
+    tail (9.05, 12.12, 24.37 hours, where it decays slowly). A stationary
+    kernel has a single global lengthscale, so on raw time it must
+    compromise between the two regimes, fine enough for the rise and
+    coarse enough not to chase noise in the tail. Modelling on
+    `log1p(time)` gives the early and late regions comparable spacing, so
+    one lengthscale can serve both.
 
-    So: a zero-mean `pm.gp.Marginal` with a `Matern52` covariance,
-    evaluated directly on the **standardized raw time** axis.
-    `pm.gp.Marginal` marginalizes the latent function analytically, so
-    `.marginal_likelihood` gives us an exact Gaussian likelihood in the
-    hyperparameters ($\ell$, $\eta$, $\sigma$), no MCMC over $f$ itself
-    is needed. We optimize with `pm.find_MAP`, which is enough to expose
-    the problem without paying for a full fit.
+    Second, the curve has a clear global trend. Giving the GP a linear
+    mean function on `log1p(time)` lets the covariance describe departures
+    from that named trend rather than the whole curve, which matters most
+    where data are thin and beyond the observed range.
+
+    We use `pm.gp.Marginal`, which integrates the latent function out
+    analytically, so `.marginal_likelihood` is an exact Gaussian
+    likelihood in $\ell$, $\eta$, and $\sigma$ alone.
     """)
-    return
 
-
-@app.cell
-def _(X, y):
-    def build_naive_marginal_gp_model(raw_X, raw_y):
-        coords = {"observation": np.arange(len(raw_y)), "feature": ["time"]}
-        with pm.Model(coords=coords) as model:
-            x_data = pm.Data("X", raw_X, dims=("observation", "feature"))
-            concentration = pm.Data("concentration", raw_y, dims="observation")
-            ell = pm.LogNormal("ell", mu=0, sigma=1)
-            eta = pm.HalfNormal("eta", sigma=1)
-            sigma = pm.HalfNormal("sigma", sigma=0.5)
-            gp = pm.gp.Marginal(
-                mean_func=pm.gp.mean.Zero(),
-                cov_func=eta**2 * pm.gp.cov.Matern52(1, ls=ell),
-            )
-            gp.marginal_likelihood(
-                "y", X=x_data, y=concentration, sigma=sigma, dims="observation"
-            )
-        return model, gp
-
-    naive_model, gp_naive = build_naive_marginal_gp_model(X, y)
-    return gp_naive, naive_model
-
-
-@app.cell
-def _(naive_model):
-    with naive_model:
-        naive_prior = pm.sample_prior_predictive(draws=300, random_seed=RANDOM_SEED)
-    naive_prior_y = naive_prior["prior_predictive"]["y"]
-    print(
-        "Naive prior predictive 89% pointwise interval spans "
-        f"{float(naive_prior_y.quantile(0.055)):.2f} to "
-        f"{float(naive_prior_y.quantile(0.945)):.2f} on the standardized scale."
-    )
-    return
-
-
-@app.cell
-def _(naive_model):
-    naive_model.compile_logp()(naive_model.initial_point())
-    with naive_model:
-        map_naive = pm.find_MAP(progressbar=False)
-    print("Naive MAP optimization complete")
-    return (map_naive,)
-
-
-@app.cell(hide_code=True)
-def _(
-    conc_mean,
-    conc_std,
-    gp_naive,
-    map_naive,
-    naive_model,
-    time_mean,
-    time_std,
-    time_vals,
-):
-    naive_grid = np.linspace(time_vals.min(), time_vals.max(), 200)
-    naive_Xnew = ((naive_grid - time_mean) / time_std).reshape(-1, 1)
-
-    with naive_model:
-        naive_mu, naive_var = gp_naive.predict(naive_Xnew, point=map_naive, diag=True)
-
-    naive_mu_orig = naive_mu * conc_std + conc_mean
-    naive_sd_orig = np.sqrt(naive_var) * conc_std
-    return naive_grid, naive_mu_orig, naive_sd_orig
-
-
-@app.cell(hide_code=True)
-def _(conc_vals, naive_grid, naive_mu_orig, naive_sd_orig, time_vals):
-    naive_fig = go.Figure()
-    naive_fig.add_trace(
-        go.Scatter(
-            x=np.concatenate([naive_grid, naive_grid[::-1]]),
-            y=np.concatenate(
-                [
-                    naive_mu_orig + 2 * naive_sd_orig,
-                    (naive_mu_orig - 2 * naive_sd_orig)[::-1],
-                ]
-            ),
-            fill="toself",
-            fillcolor="rgba(74,158,222,0.2)",
-            line=dict(color="rgba(255,255,255,0)"),
-            name="MAP mean ± 2 SD",
-        )
-    )
-    naive_fig.add_trace(
-        go.Scatter(
-            x=naive_grid,
-            y=naive_mu_orig,
-            mode="lines",
-            name="naive GP (MAP)",
-            line=dict(color=PYMC_LIGHT_BLUE, width=3),
-        )
-    )
-    naive_fig.add_trace(
-        go.Scatter(
-            x=time_vals,
-            y=conc_vals,
-            mode="markers",
-            name="observed",
-            marker=dict(color="black", size=8),
-        )
-    )
-    naive_fig.update_layout(
-        title="Naive GP (raw standardized time) — struggles with rise + decay",
-        xaxis_title="Time since dose (hours)",
-        yaxis_title="Concentration (mg/L)",
-        template="plotly_white",
-    )
-    naive_fig
-    return
-
-
-@app.cell(hide_code=True)
-def _():
-    mo.md(r"""
-    ### Why the naive fit struggles
-
-    The observed time points are very unevenly spaced: dense near
-    $t=0$ (0, 0.25, 0.57, 1.12, 2.02 hours, where concentration is
-    rising fastest) and sparse in the tail (9.05, 12.12, 24.37 hours ,
-    where it is decaying slowly). A single global lengthscale
-    $\ell$ has to compromise between these two regimes: fine enough to
-    catch the fast rise, coarse enough not to overfit noise in the long,
-    sparsely-sampled tail. The MAP fit above visibly overshoots the
-    early rise and is under-constrained past $t \approx 12$.
-
-    Two standard fixes: **transform the input** so that the regions of
-    genuinely different curvature are given comparable spacing (here,
-    `log1p(time)` compresses the long tail without needing a second
-    lengthscale), and/or **add a mean function** so the GP only needs to
-    model the residual departure from a simple parametric trend rather
-    than the whole curve. We'll use both below.
-    """)
     return
 
 
@@ -978,20 +852,24 @@ def _(gp_model, idata):
         idata,
         var_names=structured_free_rv_names,
         compact=True,
-        figure_kwargs={"figsize": (7, 4)},
+        figure_kwargs={"figsize": (9, 1.2 * len(structured_free_rv_names))},
     )
-    trace_plot.viz["figure"].item()
+    svg_figure(trace_plot.viz["figure"].item())
+
     return
 
 
 @app.cell(hide_code=True)
 def _(gp_model, idata):
+    rank_var_names = sampled_rv_names(idata, gp_model)
     rank_plot = az.plot_rank(
         idata,
-        var_names=sampled_rv_names(idata, gp_model),
-        figure_kwargs={"figsize": (7, 4)},
+        var_names=rank_var_names,
+        col_wrap=len(rank_var_names),
+        figure_kwargs={"figsize": (2.0 * len(rank_var_names), 2.6)},
     )
-    rank_plot.viz["figure"].item()
+    svg_figure(rank_plot.viz["figure"].item())
+
     return
 
 
@@ -1164,7 +1042,15 @@ def _(
 
 @app.cell
 def _(idata_with_ppc):
-    az.plot_ppc_dist(idata_with_ppc, var_names=["y"], kind="ecdf", num_samples=50)
+    ppc_plot = az.plot_ppc_dist(
+        idata_with_ppc,
+        var_names=["y"],
+        kind="ecdf",
+        num_samples=50,
+        figure_kwargs={"figsize": (7, 3.5)},
+    )
+    svg_figure(ppc_plot.viz["figure"].item())
+
     return
 
 
@@ -1174,10 +1060,9 @@ def _():
     The narrower band is uncertainty in the latent function $f$ alone
     (`pred_noise=False`); the wider band additionally folds in the
     observation noise $\sigma$ (`pred_noise=True`) and is the right one
-    to compare against *new, unobserved measurements*. The transformed
-    input plus linear mean function now trace the rise, peak, and decay
-    far more faithfully than the naive fit.
+    to compare against *new, unobserved measurements*.
     """)
+
     return
 
 
@@ -1613,11 +1498,11 @@ def _():
 
     For comparison, `.predict` returns a closed-form mean and variance at
     a single hyperparameter point (e.g. the MAP) rather than the full
-    posterior-averaged conditional above, the same shortcut used for the
-    naive Theophylline fit earlier. It is cheap (one linear solve, no
-    MCMC over predictions) but, like any plug-in estimate, understates
+    posterior-averaged conditional above. It is cheap (one linear solve,
+    no MCMC over predictions) but, like any plug-in estimate, understates
     uncertainty, since it ignores the spread over $(\ell, \eta, \sigma)$.
     """)
+
     return
 
 
@@ -1660,7 +1545,7 @@ def _(
             fill="toself",
             fillcolor="rgba(129,194,64,0.25)",
             line=dict(color="rgba(255,255,255,0)"),
-            name="MAP mean ± 2 SD",
+            name="±2 SD of f, hyperparameters fixed at MAP",
         )
     )
     kopech_map_fig.add_trace(
@@ -1668,7 +1553,7 @@ def _(
             x=kopech_day_grid,
             y=kopech_predict_mean,
             mode="lines",
-            name="MAP prediction",
+            name="conditional mean at MAP",
             line=dict(color=PYMC_GREEN, width=2),
         )
     )
@@ -2352,9 +2237,16 @@ def _(
     icm_pred_mean,
     icm_rate,
 ):
-    icm_prediction_plots = []
-    for icm_row, icm_pitcher_name in enumerate(icm_pitchers, start=1):
-        icm_slice = slice(icm_n_grid * (icm_row - 1), icm_n_grid * icm_row)
+    icm_fill_colors = [
+        "rgba(21,74,114,0.2)",
+        "rgba(129,194,64,0.2)",
+        "rgba(74,158,222,0.2)",
+        "rgba(64,97,31,0.2)",
+        "rgba(140,28,19,0.2)",
+    ]
+    icm_prediction_plots = {}
+    for icm_row, icm_pitcher_name in enumerate(icm_pitchers):
+        icm_slice = slice(icm_n_grid * icm_row, icm_n_grid * (icm_row + 1))
         icm_pred_fig = go.Figure()
         icm_pred_fig.add_trace(
             go.Scatter(
@@ -2366,9 +2258,9 @@ def _(
                     ]
                 ),
                 fill="toself",
-                fillcolor="rgba(21,74,114,0.2)",
+                fillcolor=icm_fill_colors[icm_row],
                 line=dict(color="rgba(255,255,255,0)"),
-                showlegend=False,
+                name="89% ETI",
             )
         )
         icm_pred_fig.add_trace(
@@ -2376,34 +2268,30 @@ def _(
                 x=icm_day_grid,
                 y=icm_pred_mean.values[icm_slice],
                 mode="lines",
-                line=dict(color=icm_colors[icm_row - 1], width=2),
-                showlegend=False,
+                line=dict(color=icm_colors[icm_row], width=3),
+                name="posterior mean",
             )
         )
-        icm_obs_mask = icm_output == (icm_row - 1)
+        icm_obs_mask = icm_output == icm_row
         icm_pred_fig.add_trace(
             go.Scatter(
                 x=icm_day[icm_obs_mask],
                 y=icm_rate[icm_obs_mask],
                 mode="markers",
-                marker=dict(color="black", size=5),
-                showlegend=False,
+                marker=dict(color="black", size=6),
+                name="observed",
             )
         )
         icm_pred_fig.update_layout(
             title=f"{icm_pitcher_name}: ICM posterior mean and 89% ETI",
+            xaxis_title="Day of year",
+            yaxis_title="Spin rate (rpm)",
             template="plotly_white",
-            height=300,
-            margin=dict(l=50, r=20, t=50, b=45),
+            height=360,
         )
-        icm_prediction_plots.append(mo.as_html(icm_pred_fig))
-    mo.vstack(
-        [
-            mo.hstack(icm_prediction_plots[:3], widths="equal", gap=1),
-            mo.hstack([*icm_prediction_plots[3:], mo.md("")], widths="equal", gap=1),
-        ],
-        gap=1,
-    )
+        icm_prediction_plots[icm_pitcher_name] = mo.as_html(icm_pred_fig)
+    mo.ui.tabs(icm_prediction_plots)
+
     return
 
 
@@ -3113,17 +3001,27 @@ def _():
     ## Robust regression with a Student-t likelihood
 
     Every model so far has used a Gaussian observation layer. Real data
-    sometimes have heavier tails than that, occasional large outliers a
-    Gaussian likelihood cannot explain except by inflating $\sigma$ for
-    every point. A **Student-t** likelihood has heavier tails than the
-    Gaussian (controlled by its degrees-of-freedom parameter $\nu$: small
-    $\nu$ means heavy tails, and $\nu \to \infty$ recovers the Gaussian),
-    so it can treat a handful of large residuals as unsurprising rather
-    than requiring a wider observation-noise band for every point. We
-    generate data the same way as the very first example, a draw from a
-    GP with known $\ell$, $\eta$, but now corrupt it with Student-t noise
-    of known $\sigma$ and $\nu = 3$ instead of Gaussian noise, so the
-    long-tailed outliers below are simulated, not real-data mess.
+    sometimes have heavier tails than that: a few large outliers force a
+    Gaussian likelihood either to treat them as implausible or to inflate
+    $sigma$ for every observation. A **Student-t** likelihood separates
+    those jobs. Its degrees-of-freedom parameter $
+    u$ controls tail weight:
+    small $
+    u$ allows occasional large residuals, while $
+    u 	o infty$
+    recovers the Gaussian likelihood.
+
+    The GP prior does not change. At any finite collection of inputs, a GP
+    is a multivariate normal distribution over the corresponding function
+    values. What changes is the observation layer. Gaussian noise lets us
+    integrate those values out; Student-t noise does not, so this is the
+    first model in which we retain and sample the latent function itself.
+
+    We simulate the same kind of data as in the first example—a GP draw with
+    known $ell$ and $eta$—but corrupt it with Student-t noise of known
+    $sigma$ and $
+    u = 3$. The outliers below are therefore part of the
+    known data-generating process, not unexplained mess in a real dataset.
     """)
     return
 
@@ -3196,26 +3094,30 @@ def _(robust_X, robust_f_true, robust_y):
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
-    ### `gp.Latent` and `.prior`
+    ### gp.Latent and .prior
 
-    `gp.Latent` represents the GP's finite vector of function values as
-    explicit latent variables, rather than integrating them out. Unlike
-    `gp.Marginal`, it can be paired with **any** likelihood, Gaussian,
-    Student-t, Poisson, Bernoulli. With inputs of finite size, `.prior`
-    places a multivariate-normal prior directly on $\mathbf f$:
+    For a finite number of inputs, a GP becomes a multivariate normal
+    vector, with its mean and covariance given by the mean function and
+    covariance function evaluated at those inputs:
 
-    $$\mathbf f \sim \text{MvNormal}(\mathbf m_x,\, \mathbf K_{xx}).$$
+    $$\mathbf f \sim \operatorname{MvNormal}\bigl(\mathbf m_X,\, K_{XX}\bigr).$$
 
-    By default PyMC uses a non-centered Cholesky representation
-    ($\mathbf v \sim \mathcal N(0, 1)$,
-    $\mathbf f = \mathbf m_x + \mathbf L \mathbf v$ with $\mathbf L$ the
-    Cholesky factor of $\mathbf K_{xx}$), which reduces posterior
-    dependence between $\mathbf f$ and the covariance hyperparameters. A
-    Student-t observation layer breaks the Gaussian conjugacy that let
-    $\mathbf f$ integrate out back in Part B, so here $\mathbf f$ must be
-    carried as 100 explicit parameters and sampled jointly with
-    $(\ell, \eta, \sigma, \nu)$, the same trade PyMC makes for the
-    coal-disasters counts later in this notebook.
+    In the marginal model above, the Gaussian observation layer lets us
+    integrate this vector out. With Student-t noise, the same integral is no
+    longer available in closed form. We therefore keep the function values
+    in the model and sample them directly.
+
+    **pm.gp.Latent** does this through **.prior("f", X=X)**, which creates the
+    finite GP vector $\mathbf f$. We can then use it as the location,
+    rate, probability, or other parameter of the observation distribution.
+    This is why a latent GP can be used with Student-t, Poisson, Bernoulli,
+    or Gaussian likelihoods.
+
+    PyMC uses a non-centered Cholesky representation by default:
+    $\mathbf v \sim \mathcal N(\mathbf0, I)$ and
+    $\mathbf f = \mathbf m_X + L\mathbf v$. Here that means sampling the
+    100 function values jointly with $(\ell, \eta, \sigma, \nu)$, rather
+    than sampling the four hyperparameters of the marginal model alone.
     """)
     return
 
