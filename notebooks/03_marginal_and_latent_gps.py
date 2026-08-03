@@ -17,7 +17,7 @@ with app.setup:
         eti_bounds,
         inference_health,
         posterior_subset,
-        sample_fresh_model_predictions,
+        sampled_rv_names,
     )
     from time import perf_counter
 
@@ -202,14 +202,8 @@ def _():
 
 @app.cell
 def _(sim_X, sim_y):
-    def build_sim_marginal_model(X, y, *, X_pred=None, pred_coord=None):
+    def build_sim_marginal_model(X, y):
         coords = {"observation": np.arange(len(y)), "feature": ["x"]}
-        if X_pred is not None:
-            coords["prediction"] = (
-                np.asarray(pred_coord)
-                if pred_coord is not None
-                else np.arange(len(X_pred))
-            )
         with pm.Model(coords=coords) as sim_model:
             x_data = pm.Data("X", X, dims=("observation", "feature"))
             y_data = pm.Data("y_obs", y, dims="observation")
@@ -221,13 +215,10 @@ def _(sim_X, sim_y):
             sim_gp.marginal_likelihood(
                 "y", X=x_data, y=y_data, sigma=sigma, dims="observation"
             )
-            if X_pred is not None:
-                x_pred = pm.Data("X_pred", X_pred, dims=("prediction", "feature"))
-                sim_gp.conditional("f_pred", x_pred, dims="prediction")
         return sim_model, sim_gp
 
     sim_model, sim_gp = build_sim_marginal_model(sim_X, sim_y)
-    return build_sim_marginal_model, sim_model
+    return sim_gp, sim_model
 
 
 @app.cell(hide_code=True)
@@ -361,18 +352,20 @@ def _():
     return
 
 
-@app.cell(hide_code=True)
-def _(build_sim_marginal_model, sim_X, sim_idata, sim_y):
+@app.cell
+def _(sim_gp, sim_idata, sim_model):
     sim_x_grid = np.linspace(0, 12, 400)
     sim_X_new = sim_x_grid[:, None]
-    sim_predictions = sample_fresh_model_predictions(
-        sim_idata,
-        lambda: build_sim_marginal_model(
-            sim_X, sim_y, X_pred=sim_X_new, pred_coord=sim_x_grid
-        )[0],
-        var_names=["f_pred"],
-        random_seed=RANDOM_SEED,
-    )
+
+    with sim_model:
+        sim_model.add_coords({"prediction": sim_x_grid})
+        sim_gp.conditional("f_pred", sim_X_new, dims="prediction")
+        sim_predictions = pm.sample_posterior_predictive(
+            posterior_subset(sim_idata),
+            var_names=["f_pred"],
+            random_seed=RANDOM_SEED,
+            predictions=True,
+        )
     return sim_predictions, sim_x_grid
 
 
@@ -677,12 +670,8 @@ def _(time_vals):
 
 
 @app.function
-def build_marginal_gp_model(X, y, *, X_pred=None, pred_coord=None):
+def build_marginal_gp_model(X, y):
     coords = {"observation": np.arange(len(y)), "feature": ["log_time"]}
-    if X_pred is not None:
-        coords["prediction"] = (
-            np.asarray(pred_coord) if pred_coord is not None else np.arange(len(X_pred))
-        )
     with pm.Model(coords=coords) as model:
         x_data = pm.Data("X", X, dims=("observation", "feature"))
         concentration = pm.Data("concentration", y, dims="observation")
@@ -698,17 +687,13 @@ def build_marginal_gp_model(X, y, *, X_pred=None, pred_coord=None):
         gp.marginal_likelihood(
             "y", X=x_data, y=concentration, sigma=sigma, dims="observation"
         )
-        if X_pred is not None:
-            x_pred = pm.Data("X_pred", X_pred, dims=("prediction", "feature"))
-            gp.conditional("f_pred", x_pred, dims="prediction")
-            gp.conditional("f_pred_noise", x_pred, pred_noise=True, dims="prediction")
     return model, gp
 
 
 @app.cell
 def _(X_log, y):
     gp_model, structured_gp = build_marginal_gp_model(X_log, y)
-    return (gp_model,)
+    return gp_model, structured_gp
 
 
 @app.cell(hide_code=True)
@@ -862,25 +847,18 @@ def _():
     mo.md(r"""
     ### Conjugacy: why the latent function integrates out
 
-    `pm.gp.Marginal` earns its name from a piece of algebra worth seeing
-    once. Write the model at the observed inputs $X$ as a latent Gaussian
-    vector $\mathbf f \sim \mathcal N(\mathbf m,\ K)$ with $K = k(X, X)$,
-    and a Gaussian observation layer
+    The marginalization property from Notebook 2 is what puts the marginal
+    likelihood in closed form. Write the model at the observed inputs as a
+    latent Gaussian vector $\mathbf f \sim \mathcal N(\mathbf m,\ K)$ with
+    $K = k(X, X)$, and a Gaussian observation layer
     $\mathbf y \mid \mathbf f \sim \mathcal N(\mathbf f,\ \sigma^2 I)$.
-    Because *both* pieces are Gaussian, the joint over
-    $(\mathbf f, \mathbf y)$ is Gaussian, and a Gaussian integrated over one
-    of its blocks is Gaussian again, the **marginalization** property from
-    Notebook 2. Integrating $\mathbf f$ out gives the **marginal
-    likelihood** in closed form:
+    Integrating $\mathbf f$ out of the joint leaves
 
     $$\mathbf y \sim \mathcal N\big(\mathbf m,\ K + \sigma^2 I\big).$$
 
-    No latent $\mathbf f$ appears, the function values have been absorbed
-    into the $n \times n$ covariance $K + \sigma^2 I$. This is exactly what
-    `.marginal_likelihood("y", X=X, y=y, sigma=sigma)` evaluates. The only
-    free unknowns left are the handful of hyperparameters
-    $(\ell, \eta, \sigma)$ plus the two mean-function coefficients, **five
-    scalars**, instead of $\mathbf f$'s 11 values *and* the hyperparameters.
+    Theophylline's 11 function values are gone, absorbed into the
+    $n \times n$ covariance $K + \sigma^2 I$. What is left to sample is five
+    scalars: $(\ell, \eta, \sigma)$ and the two mean-function coefficients.
     """)
     return
 
@@ -979,7 +957,7 @@ def _(gp_model, idata):
 @app.cell
 def _(gp_model, idata):
     posterior_summary = az.summary(
-        idata, var_names=[rv.name for rv in gp_model.free_RVs], kind="stats"
+        idata, var_names=sampled_rv_names(idata, gp_model), kind="stats"
     )
     return (posterior_summary,)
 
@@ -996,31 +974,25 @@ def _(map_estimate, posterior_summary):
     return
 
 
-@app.cell
-def _():
-    def _(gp_model, idata):
-        structured_free_rv_names = [rv.name for rv in gp_model.free_RVs]
-        trace_plot = az.plot_trace_dist(
-            idata,
-            var_names=structured_free_rv_names,
-            compact=True,
-            figure_kwargs={"figsize": (5, 3.5)},
-        )
-        rank_plot = az.plot_rank(
-            idata,
-            var_names=structured_free_rv_names,
-            figure_kwargs={"figsize": (5, 3.5)},
-        )
-        mo.hstack(
-            [
-                mo.mpl.interactive(trace_plot.viz["figure"].item()),
-                mo.mpl.interactive(rank_plot.viz["figure"].item()),
-            ],
-            gap=1,
-            justify="center",
-        )
-        return
-
+@app.cell(hide_code=True)
+def _(gp_model, idata):
+    structured_free_rv_names = sampled_rv_names(idata, gp_model)
+    trace_plot = az.plot_trace_dist(
+        idata,
+        var_names=structured_free_rv_names,
+        compact=True,
+        figure_kwargs={"figsize": (7, 4)},
+    )
+    rank_plot = az.plot_rank(
+        idata,
+        var_names=structured_free_rv_names,
+        figure_kwargs={"figsize": (7, 4)},
+    )
+    mo.hstack(
+        [trace_plot.viz["figure"].item(), rank_plot.viz["figure"].item()],
+        gap=1,
+        justify="center",
+    )
     return
 
 
@@ -1090,14 +1062,18 @@ def _(log_time_mean, log_time_std, time_vals):
     return Xnew, time_grid
 
 
-@app.cell(hide_code=True)
-def _(X_log, Xnew, idata, time_grid, y):
-    structured_predictions = sample_fresh_model_predictions(
-        idata,
-        lambda: build_marginal_gp_model(X_log, y, X_pred=Xnew, pred_coord=time_grid)[0],
-        var_names=["f_pred", "f_pred_noise"],
-        random_seed=RANDOM_SEED,
-    )
+@app.cell
+def _(Xnew, gp_model, idata, structured_gp, time_grid):
+    with gp_model:
+        gp_model.add_coords({"prediction": time_grid})
+        structured_gp.conditional("f_pred", Xnew, dims="prediction")
+        structured_gp.conditional("f_pred_noise", Xnew, pred_noise=True, dims="prediction")
+        structured_predictions = pm.sample_posterior_predictive(
+            posterior_subset(idata),
+            var_names=["f_pred", "f_pred_noise"],
+            random_seed=RANDOM_SEED,
+            predictions=True,
+        )
     return (structured_predictions,)
 
 
@@ -1288,14 +1264,18 @@ def _(
         extrap_X = ((np.log1p(extrap_grid) - log_time_mean) / log_time_std).reshape(
             -1, 1
         )
-        extrap_predictions = sample_fresh_model_predictions(
-            idata,
-            lambda: build_marginal_gp_model(
-                X_log, y, X_pred=extrap_X, pred_coord=extrap_grid
-            )[0],
-            var_names=["f_pred_noise"],
-            random_seed=RANDOM_SEED,
-        )
+        extrap_model, extrap_gp = build_marginal_gp_model(X_log, y)
+        with extrap_model:
+            extrap_model.add_coords({"prediction": extrap_grid})
+            extrap_gp.conditional(
+                "f_pred_noise", extrap_X, pred_noise=True, dims="prediction"
+            )
+            extrap_predictions = pm.sample_posterior_predictive(
+                posterior_subset(idata),
+                var_names=["f_pred_noise"],
+                random_seed=RANDOM_SEED,
+                predictions=True,
+            )
         extrap_noisy_draws = (
             extrap_predictions["predictions"]["f_pred_noise"].rename(
                 {"prediction": "time"}
@@ -1458,34 +1438,28 @@ def _():
 
 @app.cell
 def _(kopech_day_z, kopech_rate_z):
-    def build_kopech_spin_model(day, rate, *, day_pred=None):
+    def build_kopech_spin_model(day, rate):
         coords = {"observation": np.arange(len(rate)), "feature": ["day_of_year"]}
-        if day_pred is not None:
-            coords["prediction"] = np.arange(len(day_pred))
         with pm.Model(coords=coords) as kopech_model:
             day_data = pm.Data(
                 "day_of_year", day[:, None], dims=("observation", "feature")
             )
             rate_data = pm.Data("spin_rate", rate, dims="observation")
+
             ell = pm.LogNormal("ell", mu=0, sigma=1)
             eta = pm.HalfNormal("eta", sigma=1)
             sigma = pm.HalfNormal("sigma", sigma=1)
             cov_fn = eta**2 * pm.gp.cov.Matern52(1, ls=ell)
+
             kopech_gp = pm.gp.Marginal(mean_func=pm.gp.mean.Zero(), cov_func=cov_fn)
+
             kopech_gp.marginal_likelihood(
                 "spin", X=day_data, y=rate_data, sigma=sigma, dims="observation"
             )
-            if day_pred is not None:
-                day_pred_data = pm.Data(
-                    "day_of_year_pred",
-                    day_pred[:, None],
-                    dims=("prediction", "feature"),
-                )
-                kopech_gp.conditional("spin_pred", day_pred_data, dims="prediction")
         return kopech_model, kopech_gp
 
     kopech_model, kopech_gp = build_kopech_spin_model(kopech_day_z, kopech_rate_z)
-    return build_kopech_spin_model, kopech_gp, kopech_model
+    return kopech_gp, kopech_model
 
 
 @app.cell
@@ -1547,26 +1521,27 @@ def _(
     return
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(
-    build_kopech_spin_model,
     kopech_day,
     kopech_day_mean,
     kopech_day_std,
-    kopech_day_z,
+    kopech_gp,
     kopech_idata,
-    kopech_rate_z,
+    kopech_model,
 ):
     kopech_day_grid = np.arange(kopech_day.min(), kopech_day.max() + 1)
     kopech_day_grid_z = (kopech_day_grid - kopech_day_mean) / kopech_day_std
-    kopech_predictions = sample_fresh_model_predictions(
-        kopech_idata,
-        lambda: build_kopech_spin_model(
-            kopech_day_z, kopech_rate_z, day_pred=kopech_day_grid_z
-        )[0],
-        var_names=["spin_pred"],
-        random_seed=RANDOM_SEED,
-    )
+
+    with kopech_model:
+        kopech_model.add_coords({"prediction": kopech_day_grid})
+        kopech_gp.conditional("spin_pred", kopech_day_grid_z[:, None], dims="prediction")
+        kopech_predictions = pm.sample_posterior_predictive(
+            posterior_subset(kopech_idata),
+            var_names=["spin_pred"],
+            random_seed=RANDOM_SEED,
+            predictions=True,
+        )
     return kopech_day_grid, kopech_day_grid_z, kopech_predictions
 
 
@@ -1730,16 +1705,9 @@ def _():
     specific physical knowledge, and inference has to apportion the signal
     between its parts.
 
-    ### Background
-
-    NOAA CO-OPS station 9414290 (San Francisco, CA) is a long-record
-    **mixed semidiurnal** tide station: the water level shows two
-    superimposed periodic components, a roughly 12.42-hour
-    **semidiurnal** (twice-daily) tide driven mainly by the moon, and a
-    roughly 23.93-hour **diurnal** (once-daily) tide, riding on top of
-    a slower background trend. Values below are hourly water levels in
-    meters relative to the MLLW (mean lower low water) datum for a
-    slice of 2019.
+    The data are the same as in notebook 2: hourly water levels in metres at
+    NOAA CO-OPS station 9414290 (San Francisco), a mixed semidiurnal station
+    whose 12.42-hour and 23.93-hour components ride on a slower trend.
     """)
     return
 
@@ -1833,11 +1801,8 @@ def _(X_tide, tide_hours_std, y_tide):
     }
 
 
-    def build_tide_model(X_pred=None):
-        coords = dict(tide_coords)
-        if X_pred is not None:
-            coords["prediction"] = np.arange(len(X_pred))
-        with pm.Model(coords=coords) as tide_model:
+    def build_tide_model():
+        with pm.Model(coords=tide_coords) as tide_model:
             X_data = pm.Data("X", X_tide, dims=("observation", "feature"))
             tide_level_data = pm.Data("tide_level", y_tide, dims="observation")
             ell_trend = pm.LogNormal("ell_trend", mu=0, sigma=1)
@@ -1860,14 +1825,11 @@ def _(X_tide, tide_hours_std, y_tide):
                 sigma=sigma_tide,
                 dims="observation",
             )
-            if X_pred is not None:
-                X_pred_data = pm.Data("X_pred", X_pred, dims=("prediction", "feature"))
-                gp_tide.conditional("f_tide_pred", X_pred_data, dims="prediction")
-        return tide_model
+        return tide_model, gp_tide
 
 
-    tide_model = build_tide_model()
-    return build_tide_model, tide_model
+    tide_model, gp_tide = build_tide_model()
+    return gp_tide, tide_model
 
 
 @app.cell(hide_code=True)
@@ -2007,21 +1969,23 @@ def _(
     return
 
 
-@app.cell(hide_code=True)
-def _(X_tide, build_tide_model, tide_idata):
-    tide_ppc = sample_fresh_model_predictions(
-        tide_idata,
-        lambda: build_tide_model(X_tide),
-        var_names=["f_tide_pred"],
-        random_seed=RANDOM_SEED,
-    )
+@app.cell
+def _(X_tide, gp_tide, tide_idata, tide_model):
+    with tide_model:
+        tide_model.add_coords({"prediction": np.arange(len(X_tide))})
+        gp_tide.conditional("f_tide_pred", X_tide, dims="prediction")
+        tide_ppc = pm.sample_posterior_predictive(
+            posterior_subset(tide_idata),
+            var_names=["f_tide_pred"],
+            random_seed=RANDOM_SEED,
+            predictions=True,
+        )
     return (tide_ppc,)
 
 
 @app.cell
-def _(build_tide_model, tide_idata):
-    tide_observed_model = build_tide_model()
-    with tide_observed_model:
+def _(tide_idata, tide_model):
+    with tide_model:
         tide_observed_ppc = pm.sample_posterior_predictive(
             posterior_subset(tide_idata),
             var_names=["y"],
@@ -2253,14 +2217,8 @@ def _(icm_X, icm_pitchers, icm_rate_z):
         "coregion_rank": ["w1", "w2"],
     }
 
-    def build_icm_model(X, y, *, X_pred=None, pred_coord=None):
+    def build_icm_model(X, y):
         coords = dict(icm_coords)
-        if X_pred is not None:
-            coords["prediction"] = (
-                np.asarray(pred_coord)
-                if pred_coord is not None
-                else np.arange(len(X_pred))
-            )
         with pm.Model(coords=coords) as icm_model:
             X_data = pm.Data("X", X, dims=("observation", "icm_feature"))
             y_data = pm.Data("y_obs", y, dims="observation")
@@ -2278,15 +2236,10 @@ def _(icm_X, icm_pitchers, icm_rate_z):
             icm_gp.marginal_likelihood(
                 "y", X=X_data, y=y_data, sigma=sigma, dims="observation"
             )
-            if X_pred is not None:
-                X_pred_data = pm.Data(
-                    "X_pred", X_pred, dims=("prediction", "icm_feature")
-                )
-                icm_gp.conditional("f_pred", X_pred_data, dims="prediction")
         return icm_model, icm_gp
 
     icm_model, icm_gp = build_icm_model(icm_X, icm_rate_z)
-    return build_icm_model, icm_model
+    return icm_gp, icm_model
 
 
 @app.cell
@@ -2348,16 +2301,15 @@ def _(
     return
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(
-    build_icm_model,
-    icm_X,
     icm_day,
     icm_day_mean,
     icm_day_std,
+    icm_gp,
     icm_idata,
+    icm_model,
     icm_pitchers,
-    icm_rate_z,
 ):
     icm_day_grid = np.arange(icm_day.min(), icm_day.max() + 1)
     icm_day_grid_z = (icm_day_grid - icm_day_mean) / icm_day_std
@@ -2367,12 +2319,15 @@ def _(
         [np.tile(icm_day_grid_z, len(icm_pitchers)), icm_output_grid]
     )
 
-    icm_predictions = sample_fresh_model_predictions(
-        icm_idata,
-        lambda: build_icm_model(icm_X, icm_rate_z, X_pred=icm_X_grid)[0],
-        var_names=["f_pred"],
-        random_seed=RANDOM_SEED,
-    )
+    with icm_model:
+        icm_model.add_coords({"prediction": np.arange(len(icm_X_grid))})
+        icm_gp.conditional("f_pred", icm_X_grid, dims="prediction")
+        icm_predictions = pm.sample_posterior_predictive(
+            posterior_subset(icm_idata),
+            var_names=["f_pred"],
+            random_seed=RANDOM_SEED,
+            predictions=True,
+        )
     return icm_day_grid, icm_n_grid, icm_predictions
 
 
@@ -2620,13 +2575,22 @@ def _():
     Here the same idea extends from one intercept to a whole trajectory:
 
     $$
-    f_j(t) = \alpha_{\mathrm{pop}} + \alpha_j + f_{\mathrm{pop}}(t) + d_j(t).
+    f_j(t) = \alpha_j + f_{\mathrm{pop}}(t) + d_j(t).
     $$
 
     The population GP $f_{\mathrm{pop}}(t)$ describes shared time variation;
-    $d_j(t)$ is pitcher $j$'s GP departure. Constraining the departures to
-    average to zero makes the population curve the average trajectory rather
-    than letting a deviation duplicate it.
+    $d_j(t)$ is pitcher $j$'s GP departure. The intercept deviations
+    $\alpha_j - \alpha_{\mathrm{pop}}$ and the departures $d_j$ are both
+    constrained to average to zero, which makes the population curve the
+    average trajectory rather than letting a deviation duplicate it.
+
+    Both GPs below are `pm.gp.Latent`, not `pm.gp.Marginal`, even though the
+    spin rates are Gaussian. `Marginal` integrates the function values away,
+    and this model needs them: $f_{\mathrm{pop}}$ and $d_j$ are separate
+    functions that get added together before reaching the likelihood, so
+    neither one on its own is what the observations are a noisy version of.
+    `gp.prior()` puts those values in the model as explicit parameters. The
+    section on `gp.Latent` later in this notebook covers the API in full.
     """)
     return
 
@@ -3261,10 +3225,8 @@ def _():
 
 @app.cell
 def _(robust_X, robust_y):
-    def build_robust_model(X, y, *, X_pred=None):
+    def build_robust_model(X, y):
         coords = {"observation": np.arange(len(y)), "feature": ["x"]}
-        if X_pred is not None:
-            coords["prediction"] = np.arange(len(X_pred))
         with pm.Model(coords=coords) as robust_model:
             X_data = pm.Data("X", X, dims=("observation", "feature"))
             y_data = pm.Data("y_obs", y, dims="observation")
@@ -3278,9 +3240,6 @@ def _(robust_X, robust_y):
             pm.StudentT(
                 "y", mu=f, sigma=sigma, nu=nu, observed=y_data, dims="observation"
             )
-            if X_pred is not None:
-                X_pred_data = pm.Data("X_pred", X_pred, dims=("prediction", "feature"))
-                robust_gp.conditional("f_pred", X_pred_data, dims="prediction")
         return robust_model, robust_gp
 
     robust_model, robust_gp = build_robust_model(robust_X, robust_y)
@@ -3644,8 +3603,10 @@ def _(disaster_counts, ell_prior, inspect, year_vals):
         return mo.as_html(rate_fig)
 
     def latent_poisson_coal_gp_details():
-        coal_idata, _ = _fit_latent_poisson_coal_gp()
-        ppc_ax = az.plot_ppc_dist(coal_idata, var_names=["y"], num_samples=50)
+        coal_idata, coal_ppc = _fit_latent_poisson_coal_gp()
+        coal_idata_with_ppc = coal_idata.copy()
+        coal_idata_with_ppc["posterior_predictive"] = coal_ppc["posterior_predictive"]
+        ppc_ax = az.plot_ppc_dist(coal_idata_with_ppc, var_names=["y"], num_samples=50)
         ppc_ax.figure.set_size_inches(6, 3.5)
         return mo.as_html(ppc_ax)
 
@@ -3795,11 +3756,9 @@ def _(X_places, y_places):
         "axis": ["east_km", "north_km"],
     }
 
-    def build_places_model(X_pred=None):
+    def build_places_model():
         """Build the covariate-adjusted spatial GP on its kilometre plane."""
         coords = dict(places_coords)
-        if X_pred is not None:
-            coords["prediction"] = np.arange(len(X_pred))
         with pm.Model(coords=coords) as places_model:
             county_inputs = pm.Data("county_inputs", X_places, dims=("county", "input"))
             diabetes_data = pm.Data("diabetes", y_places, dims="county")
@@ -3821,11 +3780,6 @@ def _(X_places, y_places):
                 sigma=sigma,
                 dims="county",
             )
-            if X_pred is not None:
-                prediction_inputs = pm.Data(
-                    "prediction_inputs", X_pred, dims=("prediction", "input")
-                )
-                gp_places.conditional("f_grid", prediction_inputs, dims="prediction")
         return places_model
 
     places_model = build_places_model()
@@ -4073,14 +4027,17 @@ def _(east_km, north_km):
     return EAST_MESH, NORTH_MESH, X_grid, in_hull_grid
 
 
-@app.cell(hide_code=True)
-def _(X_grid, build_places_model, places_idata):
-    places_grid_ppc = sample_fresh_model_predictions(
-        places_idata,
-        lambda: build_places_model(X_grid),
-        var_names=["f_grid"],
-        random_seed=RANDOM_SEED,
-    )
+@app.cell
+def _(X_grid, gp_places, places_idata, places_model):
+    with places_model:
+        places_model.add_coords({"prediction": np.arange(len(X_grid))})
+        gp_places.conditional("f_grid", X_grid, dims="prediction")
+        places_grid_ppc = pm.sample_posterior_predictive(
+            posterior_subset(places_idata),
+            var_names=["f_grid"],
+            random_seed=RANDOM_SEED,
+            predictions=True,
+        )
     return (places_grid_ppc,)
 
 
@@ -4175,8 +4132,13 @@ def _():
     is not (the robust Student-t model, the coal-disasters exercise, and
     the hierarchical spin-rate model's population-plus-deviation
     structure).
-    The dividing question was always the same: **Gaussian noise ⇒
-    `Marginal`; anything else ⇒ `Latent`.**
+    Two questions decide between them. Is the observation model Gaussian?
+    If not, `Marginal` is unavailable. If it is, does the model need the
+    function values themselves? `Marginal` integrates them away, so it can
+    only hand them back afterwards through `.conditional`. When several
+    functions have to be combined before they reach the likelihood, as the
+    hierarchical spin model's population curve and per-pitcher departures do,
+    use `Latent` even under a Gaussian likelihood.
 
     You have also seen the price both implementations pay. Every fit here
     inverts (or Cholesky-factors) an $n \times n$ covariance matrix, an

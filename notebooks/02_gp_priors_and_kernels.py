@@ -44,8 +44,9 @@ def _():
     mo.md(r"""
     # Gaussian Process Priors and Covariance Functions
 
-    Unlike splines or polynomial models, building Gaussian process models is about specifying a belief about *smoothness* and and then letting the data
-    define the shape. We will help you try to develop an intuition about this approach here.
+    This notebook is about the prior side of a GP: what a covariance
+    function says about a function before any data arrive, and how to
+    choose one.
     """)
     return
 
@@ -1470,31 +1471,18 @@ def _(tide_hours, tide_level):
 @app.cell(hide_code=True)
 def _():
     mo.md(r"""
-    ### Additive vs. multiplicative kernel structure
+    ### Composing a tide kernel
 
-    Two ways to combine covariance functions:
+    A tide record is a superposition, not one structure modulating another,
+    so it calls for the additive form from the previous section: a slowly
+    drifting mean level, plus a semidiurnal cycle, plus a diurnal cycle,
+    added together.
 
-    - **Additive (OR)**: $k(x,x') = k_1(x,x') + k_2(x,x')$. A draw from
-      the sum is a draw from $k_1$ *plus* a (statistically independent)
-      draw from $k_2$, useful when the data is a **superposition** of
-      distinct structures, e.g. a slow trend plus fast periodic
-      wiggles. This is the right structure for tides: a slowly-drifting
-      mean level, plus a semidiurnal cycle, plus a diurnal cycle, added
-      together.
-    - **Multiplicative (AND)**: $k(x,x') = k_1(x,x') \cdot k_2(x,x')$.
-      This is how you build kernels whose behavior along one dimension
-      is *modulated* by another (e.g. a periodic kernel times a slowly
-      decaying ExpQuad gives a periodic pattern that fades in and out ,
-      `pm.gp.cov.Periodic` combined this way is one route to a
-      quasi-periodic kernel), or how an ARD kernel over multiple input
-      dimensions is built.
-
-    Tides call for the additive form. Below we build a long-lengthscale
-        `Matern52` trend plus two `Periodic` components, one per known
-        physical cycle. The two periods are not free parameters: 12.42h and
-        23.93h are astronomical constants, so we fix them, and we fix each
-        component's within-cycle lengthscale too, at a value that gives a
-        smooth roughly sinusoidal cycle rather than a sharp spike.
+    Below we build a long-lengthscale `Matern52` trend plus two `Periodic`
+    components, one per known physical cycle. The two periods are not free
+    parameters: 12.42h and 23.93h are astronomical constants, so we fix them,
+    and we fix each component's within-cycle lengthscale too, at a value that
+    gives a smooth roughly sinusoidal cycle rather than a sharp spike.
     """)
     return
 

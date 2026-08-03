@@ -1,24 +1,7 @@
 """Shared Bayesian inference helpers for the workshop notebooks."""
 
-
 import arviz as az
 import numpy as np
-import pymc as pm
-
-
-def sample_fresh_model_predictions(
-    idata, build_prediction_model, *, var_names, random_seed
-):
-    """Draw named predictions from a model newly built for the prediction grid."""
-    prediction_model = build_prediction_model()
-    with prediction_model:
-        return pm.sample_posterior_predictive(
-            posterior_subset(idata, draws_per_chain=100),
-            var_names=var_names,
-            random_seed=random_seed,
-            predictions=True,
-        )
-
 
 
 def eti(data, prob=0.89):
@@ -46,11 +29,18 @@ def posterior_subset(idata, draws_per_chain=100):
     return idata.isel(draw=indices, missing_dims="ignore")
 
 
+def sampled_rv_names(idata, model):
+    """List the model's free RVs that MCMC actually drew, skipping any added later."""
+    return [rv.name for rv in model.free_RVs if rv.name in idata["posterior"].data_vars]
+
+
 def inference_health(idata, model, ess_floor=400, rhat_ceiling=1.01):
     """Summarize every free RV and report whether sampler diagnostics pass."""
-    free_rv_names = [rv.name for rv in model.free_RVs]
     diagnostics = az.summary(
-        idata, var_names=free_rv_names, kind="diagnostics", round_to="none"
+        idata,
+        var_names=sampled_rv_names(idata, model),
+        kind="diagnostics",
+        round_to="none",
     )
     divergences = int(idata["sample_stats"]["diverging"].sum().item())
     rhat = diagnostics["r_hat"].to_numpy(dtype=float)
@@ -66,5 +56,3 @@ def inference_health(idata, model, ess_floor=400, rhat_ceiling=1.01):
     diagnostics.attrs["divergences"] = divergences
     diagnostics.attrs["passed"] = passed
     return diagnostics, passed
-
-

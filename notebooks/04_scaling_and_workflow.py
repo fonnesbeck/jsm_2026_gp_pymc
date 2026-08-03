@@ -23,7 +23,6 @@ with app.setup:
     import polars as pl
     import pymc as pm
     import preliz as pz
-    import pytensor.tensor as pt
 
     PYMC_BLUE = "#154A72"
     PYMC_GREEN = "#81C240"
@@ -197,14 +196,15 @@ def _():
     $n > m$ it is singular, a *degenerate* GP. That is the precise sense in which
     everything below is approximate.
 
-    Both approximations in this notebook are rank-$m$ truncations. They differ
-    only in how they choose the subspace to keep:
+    Both approximations in this notebook route the covariance through an
+    $m$-dimensional subspace. They differ in how they choose it, and in what
+    they do about what the subspace misses:
 
-    | | rank | chosen by |
+    | | covariance used | subspace chosen by |
     |---|---|---|
-    | Exact GP | $n$ | nothing truncated |
-    | Sparse | $m$ | placement of $m$ inducing points |
-    | HSGP | $m$ | first $m$ basis functions of the domain |
+    | Exact GP | $K_{nn}$, rank $n$ | nothing truncated |
+    | Sparse (FITC) | rank-$m$ term plus a diagonal correction | placement of $m$ inducing points |
+    | HSGP | rank $m$ | first $m$ basis functions of the domain |
 
     So $m$ is an **accuracy-versus-cost** dial in both cases, not a
     flexibility-versus-overfitting one. Raising $m$ moves you toward the exact
@@ -310,7 +310,6 @@ def _():
         y = f_true + sigma_true * rng.standard_normal(n)
         return X, f_true, y
 
-
     indviz_X, indviz_f_true, indviz_y = simulate_dense_gp_data(RANDOM_SEED)
     return (indviz_X,)
 
@@ -325,17 +324,13 @@ def _(indviz_X):
 
     indviz_Xu_poor = np.linspace(indviz_X.min(), indviz_X.max(), 4)[:, None]
     # scipy's k-means ignores RANDOM_SEED, so seed= is passed to pin the centroids.
-    indviz_Xu_enough = pm.gp.util.kmeans_inducing_points(
-        20, indviz_X, seed=RANDOM_SEED
-    )
-
+    indviz_Xu_enough = pm.gp.util.kmeans_inducing_points(20, indviz_X, seed=RANDOM_SEED)
 
     def low_rank_covariance_approx(cov_func, X, Xu):
         """The Nystrom low-rank reconstruction K_nm K_mm^-1 K_mn used by FITC."""
         Kmm = cov_func(Xu).eval()
         Knm = cov_func(X, Xu).eval()
         return Knm @ np.linalg.solve(Kmm + 1e-8 * np.eye(Kmm.shape[0]), Knm.T)
-
 
     indviz_configs = [
         ("Too few inducing points (m = 4)", indviz_Xu_poor),
@@ -438,8 +433,10 @@ def _():
     an independent per-point term,
     $\max(\operatorname{diag}(K_{nn}-K_{nm}K_{mm}^{-1}K_{mn}), 0)$, so the
     approximate covariance stays valid and appropriately uncertain rather
-    than overconfident. That correction is exactly the `residual_var` term
-    inside `build_sparse_gp_model` below.
+    than overconfident. Nothing in `build_sparse_gp_model` below spells this
+    out: `pm.gp.MarginalApprox(..., approx="FITC")` applies the correction
+    internally, which is the whole difference between passing `"FITC"` and
+    passing `"DTC"`.
     """)
     return
 
@@ -489,9 +486,7 @@ def _(X_sparse, sparse_hours_std):
     sparse_semi_period_std = SPARSE_SEMI_PERIOD_HOURS / sparse_hours_std
     sparse_diurnal_period_std = SPARSE_DIURNAL_PERIOD_HOURS / sparse_hours_std
     # Seeded: see the note at the covariance-approximation figure above.
-    Xu_init = pm.gp.util.kmeans_inducing_points(
-        N_INDUCING, X_sparse, seed=RANDOM_SEED
-    )
+    Xu_init = pm.gp.util.kmeans_inducing_points(N_INDUCING, X_sparse, seed=RANDOM_SEED)
     return (
         N_INDUCING,
         SPARSE_PERIODIC_LS_STD,
@@ -508,16 +503,12 @@ def _(
     sparse_semi_period_std,
 ):
 
-    def build_sparse_gp_model(X, y, Xu, *, X_pred=None, pred_coord=None):
+    def build_sparse_gp_model(X, y, Xu):
         coords = {
             "obs": np.arange(len(X)),
             "feature": ["standardized time"],
             "inducing": np.arange(len(Xu)),
         }
-        if X_pred is not None:
-            coords["pred_obs"] = (
-                np.arange(len(X_pred)) if pred_coord is None else pred_coord
-            )
         with pm.Model(coords=coords) as model:
             X_data = pm.Data("X", X, dims=("obs", "feature"))
             y_data = pm.Data("y_data", y, dims="obs")
@@ -542,24 +533,16 @@ def _(
             gp_sparse.marginal_likelihood(
                 "y", X=X_data, Xu=Xu_data, y=y_data, sigma=sigma_sparse
             )
-            if X_pred is not None:
-                X_pred_data = pm.Data("X_pred", X_pred, dims=("pred_obs", "feature"))
-                gp_sparse.conditional(
-                    "f_sparse_latent", X_pred_data, pred_noise=False, dims="pred_obs"
-                )
-                gp_sparse.conditional(
-                    "f_sparse_noisy", X_pred_data, pred_noise=True, dims="pred_obs"
-                )
-        return model
+        return model, gp_sparse
 
     return (build_sparse_gp_model,)
 
 
 @app.cell
 def _(X_sparse, Xu_init, build_sparse_gp_model, y_sparse):
-    sparse_model = build_sparse_gp_model(X_sparse, y_sparse, Xu_init)
+    sparse_model, sparse_gp = build_sparse_gp_model(X_sparse, y_sparse, Xu_init)
     assert np.isfinite(sparse_model.compile_logp()(sparse_model.initial_point()))
-    return (sparse_model,)
+    return sparse_gp, sparse_model
 
 
 @app.cell(hide_code=True)
@@ -579,9 +562,7 @@ def _(N_INDUCING, N_SPARSE):
 def _(sparse_model):
     with sparse_model:
         sparse_start = perf_counter()
-        sparse_idata = pm.sample(
-            draws=500, tune=500, chains=4, random_seed=RANDOM_SEED
-        )
+        sparse_idata = pm.sample(draws=500, tune=500, chains=4, random_seed=RANDOM_SEED)
         sparse_sample_seconds = perf_counter() - sparse_start
     sparse_idata.to_netcdf(results_dir / "04_sparse_fitc_gp.nc")
     print(f"Sparse FITC-GP sampling wall-time: {sparse_sample_seconds:.1f}s")
@@ -590,9 +571,7 @@ def _(sparse_model):
 
 @app.cell(hide_code=True)
 def _(sparse_idata, sparse_model):
-    sparse_summary, sparse_health_passed = inference_health(
-        sparse_idata, sparse_model
-    )
+    sparse_summary, sparse_health_passed = inference_health(sparse_idata, sparse_model)
     sparse_n_div = sparse_summary.attrs["divergences"]
     sparse_summary.round(4)
     return sparse_health_passed, sparse_n_div
@@ -608,24 +587,17 @@ def _(sparse_health_passed, sparse_n_div):
 
 
 @app.cell
-def _(X_sparse, Xu_init, build_sparse_gp_model, y_sparse):
-    sparse_prediction_model = build_sparse_gp_model(
-        X_sparse,
-        y_sparse,
-        Xu_init,
-        X_pred=X_sparse,
-        pred_coord=np.arange(len(X_sparse)),
-    )
-    sparse_prediction_model.compile_logp()(sparse_prediction_model.initial_point())
-    return (sparse_prediction_model,)
-
-
-@app.cell
-def _(sparse_idata, sparse_prediction_model):
-    sparse_predictive_subset = posterior_subset(sparse_idata)
-    with sparse_prediction_model:
+def _(X_sparse, sparse_gp, sparse_idata, sparse_model):
+    with sparse_model:
+        sparse_model.add_coords({"prediction": np.arange(len(X_sparse))})
+        sparse_gp.conditional(
+            "f_sparse_latent", X_sparse, pred_noise=False, dims="prediction"
+        )
+        sparse_gp.conditional(
+            "f_sparse_noisy", X_sparse, pred_noise=True, dims="prediction"
+        )
         sparse_predictions = pm.sample_posterior_predictive(
-            sparse_predictive_subset,
+            posterior_subset(sparse_idata),
             var_names=["f_sparse_latent", "f_sparse_noisy"],
             predictions=True,
             random_seed=RANDOM_SEED,
@@ -662,7 +634,6 @@ def _(
     window_level = sparse_level[plot_mask]
     inducing_hours = Xu_init[:, 0] * sparse_hours.std(ddof=0) + sparse_hours.mean()
     visible_inducing_hours = inducing_hours[inducing_hours <= plot_hours]
-
 
     sparse_fit_fig = go.Figure()
     sparse_fit_fig.add_trace(
@@ -797,7 +768,9 @@ def _():
             )
 
         basisdemo_rng = np.random.default_rng(RANDOM_SEED)
-        basisdemo_weights = basisdemo_rng.normal(0, 1, 20) * np.exp(-0.3 * np.arange(20))
+        basisdemo_weights = basisdemo_rng.normal(0, 1, 20) * np.exp(
+            -0.3 * np.arange(20)
+        )
         basisdemo_f_approx = np.zeros_like(basisdemo_x)
         for j in range(20):
             phi_j = np.sin(
@@ -825,7 +798,6 @@ def _():
             title="HSGP basis functions: fixed shapes, learned weights",
         )
         return fig
-
 
     plot_basis_functions()
     return
@@ -896,7 +868,9 @@ def _(c_slider, m_slider):
     hsgp_demo_grid = np.linspace(-3, 3, 300).reshape(-1, 1)
     hsgp_demo_centered = hsgp_demo_grid - hsgp_demo_grid.mean(axis=0)
     hsgp_demo_L = c_slider.value * np.max(np.abs(hsgp_demo_centered), axis=0)
-    hsgp_demo_eigvals = pm.gp.hsgp_approx.calc_eigenvalues(hsgp_demo_L, [m_slider.value])
+    hsgp_demo_eigvals = pm.gp.hsgp_approx.calc_eigenvalues(
+        hsgp_demo_L, [m_slider.value]
+    )
     hsgp_demo_phi_vals = np.sin(
         np.sqrt(hsgp_demo_eigvals[:, 0])[None, :]
         * (hsgp_demo_centered[:, 0, None] + hsgp_demo_L[0])
@@ -1014,8 +988,7 @@ def _():
     - The **`Periodic`** kernel is *not* directly supported by
       `pm.gp.HSGP` (it has no ordinary power-spectral-density
       expansion), PyMC provides a separate `pm.gp.HSGPPeriodic` class
-      using a different low-rank basis (used below) for periodic
-      structure.
+      using a different low-rank basis for periodic structure.
     - Accuracy depends on `m` and the boundary factor `c` (or an
       explicit boundary `L`) both being large enough for the
       lengthscales actually present in the data, as explored above and
@@ -1150,9 +1123,11 @@ def _():
     coefficients from the scale set by the spectral density, which keeps
     NUTS from stalling when the noise level is uncertain.
 
-    `drop_first=True` removes the constant (zero-frequency) basis function.
-    It is needed whenever the model carries its own explicit intercept that
-    would otherwise be collinear with it, which is the case below.
+    `drop_first=True` removes the lowest-frequency basis function. It is not
+    a constant, the basis is a sine series indexed from the first nonzero
+    mode, but over the observed range it is close enough to flat to trade
+    off against a model intercept, so dropping it is worth doing whenever the
+    model carries its own intercept. That is the case below.
     """)
     return
 
@@ -1209,11 +1184,8 @@ def _(swing_age_grid):
         )
         return fig
 
-
     # S is the half-range of the centered inputs, which is what L = c * S uses.
-    swing_param_S = float(
-        np.abs(swing_age_grid - swing_age_grid.mean()).max()
-    )
+    swing_param_S = float(np.abs(swing_age_grid - swing_age_grid.mean()).max())
     swing_param_ell_grid = np.linspace(0.5, 25.0, 500)
     plot_hsgp_parameter_curves(swing_param_S, swing_param_ell_grid)
     return
@@ -1248,9 +1220,6 @@ def _():
     and indexed out to the observations, which is both cheaper and a
     statement about the model: swing decision is a function of age alone,
     and everything else is observation noise.
-
-    `drop_first=True` drops the constant basis function because the model
-    carries its own `intercept`; without it the two would be collinear.
     """)
     return
 
@@ -1299,7 +1268,6 @@ def _(
                 dims="observation",
             )
         return model, gp
-
 
     swing_model, swing_gp = build_swing_hsgp_model(
         swing_age_grid,
@@ -1443,13 +1411,16 @@ def _(
     {swing_min_ess_bulk:.0f} and minimum `ess_tail`
     {swing_min_ess_tail:.0f} (`inference_health` threshold check:
     **{swing_health_passed}**, an advisory flag, not a pass/fail gate).
-    Note what the approximation bought: no inducing points to place, and a
-    basis of {swing_m} coefficients in place of a
-    {len(swing_grades):,} × {len(swing_grades):,} covariance matrix. It is
-    sampled at `target_accept=0.97`, a tighter acceptance target than the
-    fits earlier in this notebook needed, which is the price of a basis
-    this large relative to the {len(swing_age_grid)}
-    distinct ages the data actually contain.
+    What the approximation bought here is the interface, not the size. The
+    {len(swing_grades):,} observations sit on only {len(swing_age_grid)}
+    distinct ages, so an exact `gp.Latent` over those ages would need a
+    {len(swing_age_grid)} × {len(swing_age_grid)} covariance, smaller than
+    this {swing_m}-coefficient basis. Read the fit as a worked example of
+    setting `m` and `c` from a lengthscale prior with no inducing points to
+    place; the cost argument only starts paying when the inputs are
+    genuinely continuous, as in the 2-D example below. The tight
+    `target_accept=0.97` is the same point from the sampler's side: the
+    basis is large relative to the structure the data can support.
     """)
     return
 
@@ -1543,9 +1514,7 @@ def _(swing_ages_obs):
 
 @app.cell
 def _(swing_idata_with_ppc):
-    az.plot_ppc_dist(
-        swing_idata_with_ppc, var_names=["y"], kind="ecdf", num_samples=50
-    )
+    az.plot_ppc_dist(swing_idata_with_ppc, var_names=["y"], kind="ecdf", num_samples=50)
     return
 
 
@@ -1675,10 +1644,12 @@ def _():
     mo.md(r"""
     ### Multi-input GPs: called-strike probability
 
-    Every GP fit so far has had a single input, time, or player age.
-    GPs generalize directly to multiple inputs: the covariance function
-    just takes a vector argument, and a Matérn kernel over $\mathbb{R}^2$
-    measures distance in the plane instead of on a line.
+    Every GP fit in *this* notebook has had a single input, time or player
+    age. Multiple inputs are not new, Notebook 3's PLACES model already put
+    a GP over two spatial coordinates with a separate lengthscale per axis.
+    What changes under HSGP is the basis: it becomes a product over the
+    axes, so the coefficient count is the product of the per-axis $m$
+    values rather than their sum.
 
     A natural baseball application is **called-strike probability**:
     given where a pitch crosses the plate, $(x, z)$, what is the
@@ -1755,7 +1726,9 @@ def _(called_strike):
     strike_X_center = (strike_X.max(axis=0) + strike_X.min(axis=0)) / 2
     strike_X_centered = strike_X - strike_X_center
     strike_L = 4.0 * (strike_X_centered.max(axis=0) - strike_X_centered.min(axis=0)) / 2
-    print(f"strike_X shape: {strike_X.shape}; basis functions: {int(np.prod(strike_m))}")
+    print(
+        f"strike_X shape: {strike_X.shape}; basis functions: {int(np.prod(strike_m))}"
+    )
     print(f"strike_L (boundary half-widths): {strike_L}")
     return strike_L, strike_X_center, strike_X_centered, strike_m, strike_y
 
@@ -1808,7 +1781,6 @@ def _(strike_L, strike_X_centered, strike_m, strike_y):
             strike_prob = pm.math.invlogit(f)
             pm.Bernoulli("strike", p=strike_prob, observed=y, dims="obs")
         return called_strike_model
-
 
     called_strike_model = build_called_strike_model(
         strike_X_centered, strike_y, strike_m, strike_L
@@ -1983,7 +1955,9 @@ def _():
     $n$ is large, your kernel is stationary, and your input dimension
     is low, as here, where it turned a 2,412-observation problem into a
     regression on 162 basis coefficients with no inducing points
-    to place, and then handled a 2-D input the other two could not.
+    to place, and then took a 2-D input in stride. Exact and sparse GPs
+    accept multidimensional inputs too; what separates them here is cost,
+    not capability.
     """)
     return
 

@@ -1,12 +1,16 @@
-from unittest.mock import patch
-
 import arviz as az
 import numpy as np
 
 import pymc as pm
 import xarray as xr
 
-from inference_contract import eti, eti_bounds, inference_health, posterior_subset
+from inference_contract import (
+    eti,
+    eti_bounds,
+    inference_health,
+    posterior_subset,
+    sampled_rv_names,
+)
 
 
 def test_eti_returns_labeled_equal_tailed_bounds():
@@ -72,92 +76,22 @@ def test_inference_health_uses_all_free_variables_and_diagnostics():
     assert passed is True
 
 
-def test_prediction_sampling_uses_a_fresh_model_without_mutating_fit_model():
-    from inference_contract import sample_fresh_model_predictions
-
-    x_observed = np.array([[0.0], [1.0]])
-    y_observed = np.array([0.1, -0.2])
-    with pm.Model(coords={"observation": [0, 1], "feature": ["x"]}) as fitted_model:
-        x_data = pm.Data("X", x_observed, dims=("observation", "feature"))
-        y_data = pm.Data("y_data", y_observed, dims="observation")
-        ell = pm.HalfNormal("ell", sigma=1)
-        eta = pm.HalfNormal("eta", sigma=1)
-        sigma = pm.HalfNormal("sigma", sigma=1)
-        gp = pm.gp.Marginal(cov_func=eta**2 * pm.gp.cov.Matern52(1, ls=ell))
-        gp.marginal_likelihood("y", X=x_data, y=y_data, sigma=sigma, dims="observation")
-
-    fitted_idata = az.from_dict(
-        {
-            "posterior": {
-                "ell": np.array([[0.7, 0.8]]),
-                "eta": np.array([[1.1, 1.2]]),
-                "sigma": np.array([[0.2, 0.3]]),
-            }
-        }
-    )
-    fitted_names = set(fitted_model.named_vars)
-
-    def build_prediction_model():
-        with pm.Model(
-            coords={"observation": [0, 1], "feature": ["x"], "prediction": [0, 1]}
-        ) as prediction_model:
-            x_data = pm.Data("X", x_observed, dims=("observation", "feature"))
-            y_data = pm.Data("y_data", y_observed, dims="observation")
-            x_pred = pm.Data("X_pred", [[0.5], [1.5]], dims=("prediction", "feature"))
-            ell = pm.HalfNormal("ell", sigma=1)
-            eta = pm.HalfNormal("eta", sigma=1)
-            sigma = pm.HalfNormal("sigma", sigma=1)
-            gp = pm.gp.Marginal(cov_func=eta**2 * pm.gp.cov.Matern52(1, ls=ell))
-            gp.marginal_likelihood(
-                "y", X=x_data, y=y_data, sigma=sigma, dims="observation"
-            )
-            gp.conditional("f_pred", x_pred, dims="prediction")
-        return prediction_model
-
-    predictions = sample_fresh_model_predictions(
-        fitted_idata,
-        build_prediction_model,
-        var_names=["f_pred"],
-        random_seed=42,
-    )
-
-    assert set(fitted_model.named_vars) == fitted_names
-    assert "f_pred" not in fitted_model.named_vars
-    assert "/predictions" in predictions.groups
-    assert predictions["predictions"]["f_pred"].sizes["prediction"] == 2
-
-
-def test_fresh_prediction_sampling_receives_100_evenly_spaced_draws_per_chain():
-    from inference_contract import sample_fresh_model_predictions
+def test_sampled_rv_names_skips_variables_added_after_sampling():
+    with pm.Model() as model:
+        alpha = pm.Normal("alpha")
+        beta = pm.HalfNormal("beta")
+        pm.Normal("obs", mu=alpha, sigma=beta, observed=np.array([0.0]))
 
     idata = az.from_dict(
         {
             "posterior": {
-                "alpha": np.arange(3 * 257, dtype=float).reshape(3, 257),
+                "alpha": np.zeros((2, 5)),
+                "beta": np.ones((2, 5)),
             }
         }
     )
-    received = []
 
-    def capture_posterior(posterior, **_kwargs):
-        received.append(posterior)
-        return posterior
+    with model:
+        pm.Normal("f_pred")
 
-    with patch(
-        "inference_contract.pm.sample_posterior_predictive",
-        side_effect=capture_posterior,
-    ):
-        sample_fresh_model_predictions(
-            idata,
-            pm.Model,
-            var_names=["alpha"],
-            random_seed=42,
-        )
-
-    expected_draws = np.linspace(0, 256, num=100, dtype=int).tolist()
-    assert received[0]["posterior"]["draw"].values.tolist() == expected_draws
-    assert received[0]["posterior"].sizes == {"chain": 3, "draw": 100}
-
-
-
-
+    assert sampled_rv_names(idata, model) == ["alpha", "beta"]
